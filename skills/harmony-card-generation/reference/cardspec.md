@@ -5,7 +5,7 @@
 CardSpec 是卡片结果的一部分，与 DSL 一起描述同一张卡片。最终响应只有一个组合结果：`genui` 代码块中的 DSL JSONL + `cardspec` 代码块中的 JSON 对象。DSL 负责可渲染 Form 组件，CardSpec 负责推荐尺寸、端侧数据能力、刷新计划和持久化契约。DSL 按本 skill 的 Form 规则生成：
 
 - `catalogId` 使用 `ohos.a2ui.extended.catalog`。
-- 组件、样式、事件、DataModel 表达式遵循 `reference/protocol.md`、`reference/component-catalog.md` 和 `reference/data-binding.md`。
+- 组件、样式、事件和 DataModel 绑定遵循 `reference/protocol.md`、`reference/component-catalog.md` 和 `reference/data-binding.md`；生成结果禁用表达式。
 - 不要从示例产物复制组件结构或 catalog。
 
 Agent 负责选择已声明能力、生成参数、设计 DataModel 初始结构、生成 DSL 和 CardSpec。端侧负责执行能力、处理权限、归一化结果、持久化配置，并在运行时发送 `updateDataModel`。
@@ -42,15 +42,7 @@ Agent 负责选择已声明能力、生成参数、设计 DataModel 初始结构
       },
       "writeResultTo": "/data/calendar"
     }
-  ],
-  "refreshPlan": {
-    "onInstall": ["today_events"],
-    "onVisible": ["today_events"],
-    "periodic": {
-      "intervalSec": 1800,
-      "bindings": ["today_events"]
-    }
-  }
+  ]
 }
 ```
 

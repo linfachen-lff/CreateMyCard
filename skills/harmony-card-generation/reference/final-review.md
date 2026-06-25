@@ -37,6 +37,7 @@
 - `onClick.call` 没有来自 event capability 或明确宿主声明。
 - 事件 `args` 使用了未在对应 `parameters` 中声明的参数，或跳转目标不在 `supportedTargets` 中。
 - 事件参数路径无法从 DataModel 推导，或本应来自 data capability 输出却无法从 `writeResultTo + outputSchema` 推导。
+- 使用 `{{ ... }}`、`$__dataModel`、`$context`、`size()` 或其它表达式语法。
 - 使用 `$__widthBreakpoint`、`$__colorMode`、网络图片 URL、SVG 或占位媒体 URL。
 - 使用未由用户提供、未在 [`asset-library.md`](asset-library.md) 声明、编造相似路径或与当前场景语义不匹配的资源路径。
 
