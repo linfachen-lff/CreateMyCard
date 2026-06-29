@@ -14,9 +14,10 @@
 
 - `createSurface` 只创建 surface，并声明 `surfaceId`、`catalogId`、`width`、`height`。
 - `updateComponents.root` 是组件树入口，必须引用 `components` 中存在的组件 id。
-- root 组件是唯一卡片 shell，承载 `width`、`height`、`padding`、`borderRadius`、`clip` 和 `backgroundColor` / `linearGradient` / `backgroundImage` 等布局和表面样式。
+- root 组件是唯一卡片 shell，承载 `width`、`height`、`padding`、`borderRadius`、`clip` 和 `backgroundColor` / `linearGradient` / `backgroundImage` 等布局和表面样式；背景也可由 root 下的真实背景组件承载。
 - `updateDataModel` 只提供运行数据；组件绑定路径必须能从它的 `value` 中解析，模板相对路径除外。
-- 不要把 root shell、安全区或内容布局样式只写在 `createSurface.styles` 中。
+- 背景色、渐变、背景图、圆角和裁剪只能写在 `root.styles` 或 root 下的真实背景组件上，不要放进 `createSurface`；否则渲染器可能忽略这些视觉字段并显示默认白底。
+- root shell、安全区和内容布局样式也要写在 root，不要只靠 `createSurface.styles`。
 
 ## 核心常量
 
