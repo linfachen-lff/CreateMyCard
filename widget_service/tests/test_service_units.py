@@ -387,11 +387,9 @@ def test_a2ui_model_client_selects_compact_dsl_mock_by_profile():
     )
 
     assert genui == expected
-    assert all(
-        isinstance(json_module.loads(line), list)
-        for line in genui.splitlines()
-        if line.strip()
-    )
+    for line in genui.splitlines():
+        if line.strip():
+            assert isinstance(json_module.loads(line), list)
 
 
 def test_a2ui_model_client_real_mode_forwards_messages(monkeypatch):

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypedDict, TypeGuard
 from urllib.parse import urlparse
@@ -152,6 +153,30 @@ def validate_compact_dsl(
     if "```" in genui_text:
         reporter.error("genui must be raw NDJSON without Markdown fences.")
 
+    components, component_order, data_rows, record_order = _read_records(
+        genui_text,
+        allowed,
+        reporter,
+    )
+    _check_first_record(record_order, reporter)
+    _check_component_tree(components, component_order, reporter)
+    _check_bindings(component_order, data_rows, reporter)
+    _check_form_submission(component_order, reporter)
+
+    errors = reporter.errors + reporter.warnings if strict else reporter.errors
+    return CompactDSLValidationReport(errors=errors, warnings=reporter.warnings)
+
+
+def _read_records(
+    genui_text: str,
+    allowed: set[str],
+    reporter: _Reporter,
+) -> tuple[
+    dict[str, _ComponentRecord],
+    list[_ComponentRecord],
+    dict[str, list[tuple[int, Any]]],
+    list[tuple[str, int, str]],
+]:
     components: dict[str, _ComponentRecord] = {}
     component_order: list[_ComponentRecord] = []
     data_rows: dict[str, list[tuple[int, Any]]] = defaultdict(list)
@@ -170,7 +195,7 @@ def validate_compact_dsl(
             reporter.error(f"genui line {line_number} must be a JSON array.")
             continue
 
-        if value and isinstance(value[0], str) and value[0].startswith("/"):
+        if _is_data_line(value):
             _read_data_line(value, line_number, data_rows, record_order, reporter)
             continue
         component = _read_component_line(value, line_number, allowed, reporter)
@@ -183,19 +208,23 @@ def validate_compact_dsl(
         components[component.component_id] = component
         component_order.append(component)
 
+    return components, component_order, data_rows, record_order
+
+
+def _check_first_record(
+    record_order: list[tuple[str, int, str]],
+    reporter: _Reporter,
+) -> None:
     if not record_order:
         reporter.error("genui must contain at least one NDJSON line.")
-    else:
-        first_kind, first_line, first_key = record_order[0]
-        if first_kind != "component" or first_key != "root":
-            reporter.error(f'line {first_line}: first genui line must create component "root".')
+        return
 
-    _check_component_tree(components, component_order, reporter)
-    _check_bindings(component_order, data_rows, reporter)
-    _check_form_submission(component_order, reporter)
-
-    errors = reporter.errors + reporter.warnings if strict else reporter.errors
-    return CompactDSLValidationReport(errors=errors, warnings=reporter.warnings)
+    first_kind, first_line, first_key = record_order[0]
+    if first_kind != "component":
+        reporter.error(f'line {first_line}: first genui line must create component "root".')
+        return
+    if first_key != "root":
+        reporter.error(f'line {first_line}: first genui line must create component "root".')
 
 
 def _read_data_line(
@@ -226,7 +255,7 @@ def _read_component_line(
         reporter.error(f"line {line_number}: component line must contain 3 or 4 items.")
         return None
     component_id, component_type, props = value[:3]
-    if not isinstance(component_id, str) or not component_id or component_id.startswith("/"):
+    if not _is_component_id(component_id):
         reporter.error(f"line {line_number}: component id must be a non-empty non-path string.")
         return None
     if not isinstance(component_type, str):
@@ -240,24 +269,59 @@ def _read_component_line(
     if "styles" in props:
         reporter.error(f"{component_id}: props must not contain an A2UI styles wrapper.")
 
-    children: list[str] = []
-    if component_type in CONTAINER_COMPONENTS:
-        if len(value) != 4:
-            reporter.error(f"{component_id}: {component_type} requires a children array.")
-        elif not isinstance(value[3], list) or not all(
-            isinstance(child, str) and child for child in value[3]
-        ):
-            reporter.error(f"{component_id}: children must be an array of non-empty string IDs.")
-        else:
-            children = value[3]
-            if len(children) != len(set(children)):
-                reporter.error(f"{component_id}: children must not contain duplicate IDs.")
-    elif len(value) == 4:
-        reporter.error(f"{component_id}: {component_type} must not have a children array.")
+    children = _read_component_children(value, component_id, component_type, reporter)
 
     _check_required_props(component_id, component_type, props, reporter)
     _check_component_prop_types(component_id, component_type, props, reporter)
     return _ComponentRecord(line_number, component_id, component_type, props, children)
+
+
+def _is_data_line(value: list[Any]) -> bool:
+    if not value:
+        return False
+    path = value[0]
+    if not isinstance(path, str):
+        return False
+    return path.startswith("/")
+
+
+def _is_component_id(value: Any) -> TypeGuard[str]:
+    if not isinstance(value, str):
+        return False
+    if not value:
+        return False
+    return not value.startswith("/")
+
+
+def _read_component_children(
+    value: list[Any],
+    component_id: str,
+    component_type: str,
+    reporter: _Reporter,
+) -> list[str]:
+    has_children = len(value) == 4
+    is_container = component_type in CONTAINER_COMPONENTS
+    if not is_container:
+        if has_children:
+            reporter.error(f"{component_id}: {component_type} must not have a children array.")
+        return []
+    if not has_children:
+        reporter.error(f"{component_id}: {component_type} requires a children array.")
+        return []
+
+    raw_children = value[3]
+    if not isinstance(raw_children, list):
+        reporter.error(f"{component_id}: children must be an array of non-empty string IDs.")
+        return []
+    children: list[str] = []
+    for child in raw_children:
+        if not _is_non_empty_string(child):
+            reporter.error(f"{component_id}: children must be an array of non-empty string IDs.")
+            return []
+        children.append(child)
+    if len(children) != len(set(children)):
+        reporter.error(f"{component_id}: children must not contain duplicate IDs.")
+    return children
 
 
 def _check_cardspec(cardspec: dict[str, Any] | str, reporter: _Reporter) -> None:
@@ -272,8 +336,15 @@ def _check_cardspec(cardspec: dict[str, Any] | str, reporter: _Reporter) -> None
         return
     if cardspec.get("suggestSize") not in {"2x2", "2x4"}:
         reporter.error('cardspec.suggestSize must be "2x2" or "2x4".')
-    if any(key in cardspec for key in ("onClick", "events", "click", "actions")):
+    if _contains_click_behavior(cardspec):
         reporter.error("CardSpec must not contain click behavior.")
+
+
+def _contains_click_behavior(cardspec: dict[str, Any]) -> bool:
+    for key in ("onClick", "events", "click", "actions"):
+        if key in cardspec:
+            return True
+    return False
 
 
 def _check_required_props(
@@ -293,65 +364,141 @@ def _check_component_prop_types(
     props: dict[str, Any],
     reporter: _Reporter,
 ) -> None:
-    if component_type in {"Row", "Column", "List"} and "space" in props:
-        if not _is_number(props["space"]) or props["space"] < 0:
-            reporter.error(f"{component_id}: {component_type}.space must be a non-negative number.")
-    elif component_type == "Text" and "content" in props:
+    if component_type in {"Row", "Column", "List"}:
+        _check_spacing_props(component_id, component_type, props, reporter)
+        return
+    validator = _COMPONENT_PROP_VALIDATORS.get(component_type)
+    if validator is not None:
+        validator(component_id, props, reporter)
+
+
+def _check_spacing_props(
+    component_id: str,
+    component_type: str,
+    props: dict[str, Any],
+    reporter: _Reporter,
+) -> None:
+    if "space" not in props:
+        return
+    space = props["space"]
+    if not _is_number(space) or space < 0:
+        reporter.error(f"{component_id}: {component_type}.space must be a non-negative number.")
+
+
+def _check_text_props(
+    component_id: str,
+    props: dict[str, Any],
+    reporter: _Reporter,
+) -> None:
+    if "content" in props:
         _require_string_source(component_id, "content", props["content"], reporter)
-    elif component_type == "Image" and "src" in props:
+
+
+def _check_image_props(
+    component_id: str,
+    props: dict[str, Any],
+    reporter: _Reporter,
+) -> None:
+    if "src" in props:
         _require_string_source(component_id, "src", props["src"], reporter)
-    elif component_type == "Progress":
-        for key in ("value", "total"):
-            if key in props and not _is_number(props[key]):
-                reporter.error(f"{component_id}: Progress.{key} must be a number.")
-        value = props.get("value")
-        total = props.get("total")
-        if _is_number(value) and not 0 <= value <= 100:
-            reporter.error(f"{component_id}: Progress.value must be between 0 and 100.")
-        if _is_number(total) and total <= 0:
-            reporter.error(f"{component_id}: Progress.total must be greater than 0.")
-        if _is_number(value) and _is_number(total) and value > total:
+
+
+def _check_progress_props(
+    component_id: str,
+    props: dict[str, Any],
+    reporter: _Reporter,
+) -> None:
+    for key in ("value", "total"):
+        if key in props and not _is_number(props[key]):
+            reporter.error(f"{component_id}: Progress.{key} must be a number.")
+
+    value = props.get("value")
+    total = props.get("total")
+    if _is_number(value) and not 0 <= value <= 100:
+        reporter.error(f"{component_id}: Progress.value must be between 0 and 100.")
+    if _is_number(total) and total <= 0:
+        reporter.error(f"{component_id}: Progress.total must be greater than 0.")
+    if _is_number(value) and _is_number(total):
+        if value > total:
             reporter.error(f"{component_id}: Progress.value must not exceed total.")
-    elif component_type == "Button":
-        if "label" in props:
-            _require_string_source(component_id, "label", props["label"], reporter)
-        if "enabled" in props and not isinstance(props["enabled"], bool):
-            reporter.error(f"{component_id}: Button.enabled must be a boolean.")
-        if "action" in props:
-            _check_button_action(component_id, props["action"], reporter)
-    elif component_type == "TextInput":
-        if "text" in props and not _is_path_binding(props["text"]):
-            reporter.error(f"{component_id}: TextInput.text must be a path binding object.")
-        _require_string_prop(component_id, "TextInput", "placeholder", props, reporter)
-        _require_bool_prop(component_id, "TextInput", "enabled", props, reporter)
-        max_length = props.get("maxLength")
-        if "maxLength" in props and (
-            not isinstance(max_length, int) or isinstance(max_length, bool) or max_length <= 0
-        ):
-            reporter.error(f"{component_id}: TextInput.maxLength must be a positive integer.")
-        input_type = props.get("type")
-        if "type" in props and input_type not in {"normal", "email", "password", "number"}:
-            reporter.error(f"{component_id}: TextInput.type is unsupported.")
-    elif component_type == "Radio":
-        _require_string_prop(component_id, "Radio", "value", props, reporter)
-        _require_string_prop(component_id, "Radio", "group", props, reporter)
-        _require_bool_prop(component_id, "Radio", "checked", props, reporter)
-        if "indicatorType" in props and props["indicatorType"] not in {"tick", "dot"}:
+
+
+def _check_button_props(
+    component_id: str,
+    props: dict[str, Any],
+    reporter: _Reporter,
+) -> None:
+    if "label" in props:
+        _require_string_source(component_id, "label", props["label"], reporter)
+    _require_bool_prop(component_id, "Button", "enabled", props, reporter)
+    if "action" in props:
+        _check_button_action(component_id, props["action"], reporter)
+
+
+def _check_text_input_props(
+    component_id: str,
+    props: dict[str, Any],
+    reporter: _Reporter,
+) -> None:
+    if "text" in props and not _is_path_binding(props["text"]):
+        reporter.error(f"{component_id}: TextInput.text must be a path binding object.")
+    _require_string_prop(component_id, "TextInput", "placeholder", props, reporter)
+    _require_bool_prop(component_id, "TextInput", "enabled", props, reporter)
+
+    max_length = props.get("maxLength")
+    if "maxLength" in props and not _is_positive_integer(max_length):
+        reporter.error(f"{component_id}: TextInput.maxLength must be a positive integer.")
+    input_type = props.get("type")
+    if "type" in props and input_type not in {"normal", "email", "password", "number"}:
+        reporter.error(f"{component_id}: TextInput.type is unsupported.")
+
+
+def _check_radio_props(
+    component_id: str,
+    props: dict[str, Any],
+    reporter: _Reporter,
+) -> None:
+    _require_string_prop(component_id, "Radio", "value", props, reporter)
+    _require_string_prop(component_id, "Radio", "group", props, reporter)
+    _require_bool_prop(component_id, "Radio", "checked", props, reporter)
+    if "indicatorType" in props:
+        if props["indicatorType"] not in {"tick", "dot"}:
             reporter.error(f"{component_id}: Radio.indicatorType must be tick or dot.")
-    elif component_type == "Toggle":
-        _require_string_prop(component_id, "Toggle", "label", props, reporter)
-        _require_bool_prop(component_id, "Toggle", "isOn", props, reporter)
-        _require_bool_prop(component_id, "Toggle", "enabled", props, reporter)
-    elif component_type == "Checkbox":
-        _require_string_prop(component_id, "Checkbox", "label", props, reporter)
-        _require_string_prop(component_id, "Checkbox", "group", props, reporter)
-        _require_bool_prop(component_id, "Checkbox", "select", props, reporter)
-    elif component_type == "Select":
-        _check_select_props(component_id, props, reporter)
-    elif component_type == "Web" and "url" in props:
-        url = props["url"]
-        if not isinstance(url, str) or not _is_http_url(url):
-            reporter.error(f"{component_id}: Web.url must be a complete http/https URL.")
+
+
+def _check_toggle_props(
+    component_id: str,
+    props: dict[str, Any],
+    reporter: _Reporter,
+) -> None:
+    _require_string_prop(component_id, "Toggle", "label", props, reporter)
+    _require_bool_prop(component_id, "Toggle", "isOn", props, reporter)
+    _require_bool_prop(component_id, "Toggle", "enabled", props, reporter)
+
+
+def _check_checkbox_props(
+    component_id: str,
+    props: dict[str, Any],
+    reporter: _Reporter,
+) -> None:
+    _require_string_prop(component_id, "Checkbox", "label", props, reporter)
+    _require_string_prop(component_id, "Checkbox", "group", props, reporter)
+    _require_bool_prop(component_id, "Checkbox", "select", props, reporter)
+
+
+def _check_web_props(
+    component_id: str,
+    props: dict[str, Any],
+    reporter: _Reporter,
+) -> None:
+    if "url" not in props:
+        return
+    url = props["url"]
+    if not isinstance(url, str):
+        reporter.error(f"{component_id}: Web.url must be a complete http/https URL.")
+        return
+    if not _is_http_url(url):
+        reporter.error(f"{component_id}: Web.url must be a complete http/https URL.")
 
 
 def _require_string_prop(
@@ -387,23 +534,40 @@ def _check_select_props(
             reporter.error(f"{component_id}: Select.options must be a non-empty array.")
         else:
             for index, option in enumerate(options):
-                if not isinstance(option, dict) or not isinstance(option.get("value"), str):
+                if not _is_valid_select_option(option):
                     reporter.error(
                         f"{component_id}: Select.options[{index}].value must be a string."
                     )
     selected = props.get("selected")
-    if "selected" in props and (
-        not isinstance(selected, int) or isinstance(selected, bool) or selected < 0
-    ):
+    selected_is_valid = _is_non_negative_integer(selected)
+    if "selected" in props and not selected_is_valid:
         reporter.error(f"{component_id}: Select.selected must be a non-negative integer.")
-    elif (
-        isinstance(options, list)
-        and options
-        and isinstance(selected, int)
-        and selected >= len(options)
-    ):
-        reporter.error(f"{component_id}: Select.selected is outside the options array.")
+    if selected_is_valid and isinstance(options, list):
+        if options and selected >= len(options):
+            reporter.error(f"{component_id}: Select.selected is outside the options array.")
     _require_string_prop(component_id, "Select", "value", props, reporter)
+
+
+def _is_valid_select_option(option: Any) -> bool:
+    if not isinstance(option, dict):
+        return False
+    return isinstance(option.get("value"), str)
+
+
+_ComponentPropValidator = Callable[[str, dict[str, Any], _Reporter], None]
+
+_COMPONENT_PROP_VALIDATORS: dict[str, _ComponentPropValidator] = {
+    "Text": _check_text_props,
+    "Image": _check_image_props,
+    "Progress": _check_progress_props,
+    "Button": _check_button_props,
+    "TextInput": _check_text_input_props,
+    "Radio": _check_radio_props,
+    "Toggle": _check_toggle_props,
+    "Checkbox": _check_checkbox_props,
+    "Select": _check_select_props,
+    "Web": _check_web_props,
+}
 
 
 def _require_string_source(
@@ -423,38 +587,52 @@ def _check_button_action(component_id: str, action: Any, reporter: _Reporter) ->
         reporter.error(f"{component_id}: Button.action must be an object.")
         return
     action_kinds = set(action) & {"functionCall", "event"}
-    if len(action_kinds) != 1 or set(action) != action_kinds:
+    if len(action_kinds) != 1:
+        reporter.error(
+            f"{component_id}: Button.action must contain exactly one of functionCall or event."
+        )
+        return
+    if set(action) != action_kinds:
         reporter.error(
             f"{component_id}: Button.action must contain exactly one of functionCall or event."
         )
         return
     if "functionCall" in action:
-        function_call = action["functionCall"]
-        if not isinstance(function_call, dict):
-            reporter.error(f"{component_id}: Button.action.functionCall must be an object.")
-            return
-        if not _is_non_empty_string(function_call.get("call")) or not isinstance(
-            function_call.get("args"), dict
-        ):
-            reporter.error(
-                f"{component_id}: functionCall requires string call and object args."
-            )
-            return
-        if function_call["call"] == "openUrl":
-            url = function_call["args"].get("url")
-            if not isinstance(url, str) or not _is_http_url(url):
-                reporter.error(
-                    f"{component_id}: openUrl args.url must be a complete http/https URL."
-                )
-    else:
-        event = action["event"]
-        if not isinstance(event, dict):
-            reporter.error(f"{component_id}: Button.action.event must be an object.")
-            return
-        if not _is_non_empty_string(event.get("name")) or not isinstance(
-            event.get("context"), dict
-        ):
-            reporter.error(f"{component_id}: event requires string name and object context.")
+        _check_function_call(component_id, action["functionCall"], reporter)
+        return
+    _check_event(component_id, action["event"], reporter)
+
+
+def _check_function_call(component_id: str, function_call: Any, reporter: _Reporter) -> None:
+    if not isinstance(function_call, dict):
+        reporter.error(f"{component_id}: Button.action.functionCall must be an object.")
+        return
+    if not _is_non_empty_string(function_call.get("call")):
+        reporter.error(f"{component_id}: functionCall requires string call and object args.")
+        return
+    if not isinstance(function_call.get("args"), dict):
+        reporter.error(f"{component_id}: functionCall requires string call and object args.")
+        return
+    if function_call["call"] != "openUrl":
+        return
+
+    url = function_call["args"].get("url")
+    if not isinstance(url, str):
+        reporter.error(f"{component_id}: openUrl args.url must be a complete http/https URL.")
+        return
+    if not _is_http_url(url):
+        reporter.error(f"{component_id}: openUrl args.url must be a complete http/https URL.")
+
+
+def _check_event(component_id: str, event: Any, reporter: _Reporter) -> None:
+    if not isinstance(event, dict):
+        reporter.error(f"{component_id}: Button.action.event must be an object.")
+        return
+    if not _is_non_empty_string(event.get("name")):
+        reporter.error(f"{component_id}: event requires string name and object context.")
+        return
+    if not isinstance(event.get("context"), dict):
+        reporter.error(f"{component_id}: event requires string name and object context.")
 
 
 def _check_component_tree(
@@ -462,17 +640,37 @@ def _check_component_tree(
     component_order: list[_ComponentRecord],
     reporter: _Reporter,
 ) -> None:
+    if not _check_root_component(components, component_order, reporter):
+        return
+    parents = _build_parent_map(components, component_order, reporter)
+    _check_parent_declarations(component_order, parents, reporter)
+
+
+def _check_root_component(
+    components: dict[str, _ComponentRecord],
+    component_order: list[_ComponentRecord],
+    reporter: _Reporter,
+) -> bool:
     root = components.get("root")
     if root is None:
         reporter.error('genui must define component "root".')
-        return
-    if not component_order or component_order[0].component_id != "root":
+        return False
+    if not component_order:
+        reporter.error('the first component line must define component "root".')
+    elif component_order[0].component_id != "root":
         reporter.error('the first component line must define component "root".')
     if root.component_type not in ROOT_COMPONENTS:
         reporter.error("root component type must be Column or Stack.")
     if root.props.get("width") != "matchParent":
         reporter.error('root props.width must be "matchParent".')
+    return True
 
+
+def _build_parent_map(
+    components: dict[str, _ComponentRecord],
+    component_order: list[_ComponentRecord],
+    reporter: _Reporter,
+) -> dict[str, list[_ComponentRecord]]:
     parents: dict[str, list[_ComponentRecord]] = defaultdict(list)
     for parent in component_order:
         for child_id in parent.children:
@@ -484,17 +682,23 @@ def _check_component_tree(
                 reporter.error(
                     f"{parent.component_id}: child {child_id} must be created after its parent."
                 )
+    return parents
 
+
+def _check_parent_declarations(
+    component_order: list[_ComponentRecord],
+    parents: dict[str, list[_ComponentRecord]],
+    reporter: _Reporter,
+) -> None:
     for component in component_order:
         if component.component_id == "root":
             if component.component_id in parents:
                 reporter.error("root must not appear in another component's children.")
             continue
-        declared_by = [
-            parent
-            for parent in parents.get(component.component_id, [])
-            if parent.line < component.line
-        ]
+        declared_by: list[_ComponentRecord] = []
+        for parent in parents.get(component.component_id, []):
+            if parent.line < component.line:
+                declared_by.append(parent)
         if not declared_by:
             reporter.error(
                 f"{component.component_id}: component must first appear in an earlier "
@@ -526,11 +730,12 @@ def _check_bindings(
                     f"{component.component_id}: binding path {path} has no data line in this genui."
                 )
                 continue
-            if initializes_value and not any(line > component.line for line, _ in rows):
-                reporter.error(
-                    f"{component.component_id}: binding path {path} must be initialized after "
-                    "the component line."
-                )
+            if initializes_value:
+                if not _has_data_row_after(rows, component.line):
+                    reporter.error(
+                        f"{component.component_id}: binding path {path} must be initialized after "
+                        "the component line."
+                    )
 
         _check_string_binding_value(component, "content", data_rows, reporter)
         _check_string_binding_value(component, "src", data_rows, reporter)
@@ -548,51 +753,89 @@ def _check_string_binding_value(
     if not _is_path_binding(value):
         return
     path = value["path"]
-    later_values = [item for line, item in data_rows.get(path, []) if line > component.line]
-    if later_values and not isinstance(later_values[0], str):
+    found, later_value = _first_data_value_after(data_rows.get(path, []), component.line)
+    if found and not isinstance(later_value, str):
         reporter.error(
             f"{component.component_id}: {prop_name} binding {path} must initialize a string value."
         )
 
 
+def _has_data_row_after(rows: list[tuple[int, Any]], line_number: int) -> bool:
+    for row_line, _ in rows:
+        if row_line > line_number:
+            return True
+    return False
+
+
+def _first_data_value_after(
+    rows: list[tuple[int, Any]],
+    line_number: int,
+) -> tuple[bool, Any]:
+    for row_line, value in rows:
+        if row_line > line_number:
+            return True, value
+    return False, None
+
+
 def _check_form_submission(
     component_order: list[_ComponentRecord], reporter: _Reporter
 ) -> None:
-    controls = [item for item in component_order if item.component_type in FORM_COMPONENTS]
+    controls, event_buttons = _collect_form_components(component_order)
     if not controls:
         return
-    event_buttons = [
-        item
-        for item in component_order
-        if item.component_type == "Button"
-        and isinstance(item.props.get("action"), dict)
-        and "event" in item.props["action"]
-        and isinstance(item.props["action"]["event"], dict)
-        and item.props["action"]["event"].get("name") == "submit_form"
-        and isinstance(item.props["action"]["event"].get("context"), dict)
-    ]
     if not event_buttons:
         reporter.error("form controls require a Button.action.event named submit_form.")
         return
+
     last_control_line = max(item.line for item in controls)
-    submission_buttons = [button for button in event_buttons if button.line > last_control_line]
+    submission_buttons = _components_after_line(event_buttons, last_control_line)
     if not submission_buttons:
         reporter.error("Button.action.event must be created after the form controls it submits.")
         return
 
-    contexts = [button.props["action"]["event"]["context"] for button in submission_buttons]
-    context_values = [value for context in contexts for value in context.values()]
+    context_values = _submission_context_values(submission_buttons)
     _check_radio_groups(controls, reporter)
+    _check_form_control_contexts(controls, context_values, reporter)
+
+
+def _collect_form_components(
+    component_order: list[_ComponentRecord],
+) -> tuple[list[_ComponentRecord], list[_ComponentRecord]]:
+    controls: list[_ComponentRecord] = []
+    event_buttons: list[_ComponentRecord] = []
+    for component in component_order:
+        if component.component_type in FORM_COMPONENTS:
+            controls.append(component)
+        if _is_submit_form_button(component):
+            event_buttons.append(component)
+    return controls, event_buttons
+
+
+def _components_after_line(
+    components: list[_ComponentRecord],
+    line_number: int,
+) -> list[_ComponentRecord]:
+    result: list[_ComponentRecord] = []
+    for component in components:
+        if component.line > line_number:
+            result.append(component)
+    return result
+
+
+def _check_form_control_contexts(
+    controls: list[_ComponentRecord],
+    context_values: list[Any],
+    reporter: _Reporter,
+) -> None:
     for control in controls:
         if control.component_type == "TextInput":
             text_binding = control.props.get("text")
             path = text_binding.get("path") if isinstance(text_binding, dict) else None
-            if path and not any(
-                _is_path_binding(value) and value["path"] == path for value in context_values
-            ):
-                reporter.error(
-                    f"{control.component_id}: submit_form context must include path {path}."
-                )
+            if path:
+                if not _context_has_path(context_values, path):
+                    reporter.error(
+                        f"{control.component_id}: submit_form context must include path {path}."
+                    )
         elif control.component_type == "Radio":
             _require_context_call(
                 control,
@@ -631,15 +874,52 @@ def _check_form_submission(
             )
 
 
+def _is_submit_form_button(component: _ComponentRecord) -> bool:
+    if component.component_type != "Button":
+        return False
+    action = component.props.get("action")
+    if not isinstance(action, dict):
+        return False
+    event = action.get("event")
+    if not isinstance(event, dict):
+        return False
+    if event.get("name") != "submit_form":
+        return False
+    return isinstance(event.get("context"), dict)
+
+
+def _submission_context_values(buttons: list[_ComponentRecord]) -> list[Any]:
+    values: list[Any] = []
+    for button in buttons:
+        context = button.props["action"]["event"]["context"]
+        values.extend(context.values())
+    return values
+
+
+def _context_has_path(context_values: list[Any], path: str) -> bool:
+    for value in context_values:
+        if _is_path_binding(value):
+            if value["path"] == path:
+                return True
+    return False
+
+
 def _check_radio_groups(controls: list[_ComponentRecord], reporter: _Reporter) -> None:
     groups: dict[str, list[_ComponentRecord]] = defaultdict(list)
     for control in controls:
-        if control.component_type == "Radio" and isinstance(control.props.get("group"), str):
-            groups[control.props["group"]].append(control)
+        if control.component_type != "Radio":
+            continue
+        group = control.props.get("group")
+        if isinstance(group, str):
+            groups[group].append(control)
     for group, radios in groups.items():
         if len(radios) < 2:
             reporter.error(f"Radio group {group} must contain at least two Radio components.")
-        if sum(item.props.get("checked") is True for item in radios) > 1:
+        checked_count = 0
+        for radio in radios:
+            if radio.props.get("checked") is True:
+                checked_count += 1
+        if checked_count > 1:
             reporter.error(f"Radio group {group} must not have more than one checked component.")
 
 
@@ -652,17 +932,28 @@ def _require_context_call(
     reporter: _Reporter,
 ) -> None:
     for value in context_values:
-        if (
-            isinstance(value, dict)
-            and value.get("call") == call
-            and isinstance(value.get("args"), dict)
-            and value["args"].get(arg_name) == arg_value
-        ):
+        if _matches_context_call(value, call, arg_name, arg_value):
             return
     reporter.error(
         f"{control.component_id}: submit_form context must include {call} "
         f"with {arg_name}={arg_value}."
     )
+
+
+def _matches_context_call(
+    value: Any,
+    call: str,
+    arg_name: str,
+    arg_value: Any,
+) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if value.get("call") != call:
+        return False
+    args = value.get("args")
+    if not isinstance(args, dict):
+        return False
+    return args.get(arg_name) == arg_value
 
 
 def _path_bindings(
@@ -684,24 +975,27 @@ def _path_bindings(
 
 
 def _is_path_binding(value: Any) -> TypeGuard[_PathBinding]:
-    return (
-        isinstance(value, dict)
-        and set(value) == {"path"}
-        and isinstance(value["path"], str)
-    )
+    if not isinstance(value, dict):
+        return False
+    if set(value) != {"path"}:
+        return False
+    return isinstance(value["path"], str)
 
 
 def _is_json_pointer(value: str) -> bool:
     if not value.startswith("/"):
         return False
-    if any("." in segment for segment in value[1:].split("/")):
-        return False
+    for segment in value[1:].split("/"):
+        if "." in segment:
+            return False
     index = 0
     while index < len(value):
         if value[index] != "~":
             index += 1
             continue
-        if index + 1 >= len(value) or value[index + 1] not in {"0", "1"}:
+        if index + 1 >= len(value):
+            return False
+        if value[index + 1] not in {"0", "1"}:
             return False
         index += 2
     return True
@@ -709,6 +1003,22 @@ def _is_json_pointer(value: str) -> bool:
 
 def _is_number(value: Any) -> TypeGuard[int | float]:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_positive_integer(value: Any) -> TypeGuard[int]:
+    if not isinstance(value, int):
+        return False
+    if isinstance(value, bool):
+        return False
+    return value > 0
+
+
+def _is_non_negative_integer(value: Any) -> TypeGuard[int]:
+    if not isinstance(value, int):
+        return False
+    if isinstance(value, bool):
+        return False
+    return value >= 0
 
 
 def _is_non_empty_string(value: Any) -> bool:

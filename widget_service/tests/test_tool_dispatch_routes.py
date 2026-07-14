@@ -447,7 +447,13 @@ def test_generation_routes_lock_and_isolate_protocol_profiles(monkeypatch):
     ]
     assert compact_artifact["meta"]["protocolProfileId"] == "compact-dsl-v1"
     assert all(isinstance(row, list) for row in compact_rows)
-    assert any(len(row) == 2 and row[0] == "/title" for row in compact_rows)
+    title_data_found = False
+    for row in compact_rows:
+        if len(row) == 2:
+            if row[0] == "/title":
+                title_data_found = True
+                break
+    assert title_data_found
 
 
 def test_missing_prd_version_returns_empty_capability_results():

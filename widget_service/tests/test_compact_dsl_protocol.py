@@ -139,7 +139,10 @@ def _all_component_rows() -> list[list[Any]]:
 
 
 def _component(rows: list[list[Any]], component_id: str) -> list[Any]:
-    return next(row for row in rows if row[0] == component_id)
+    for row in rows:
+        if row[0] == component_id:
+            return row
+    raise AssertionError(f"component not found: {component_id}")
 
 
 def _errors(rows: list[list[Any]]) -> list[str]:
@@ -163,7 +166,13 @@ def test_all_16_whitelisted_components_pass_together():
     rows = _all_component_rows()
 
     report = validate_compact_dsl(_ndjson(rows), {"suggestSize": "2x4"})
-    types = {row[1] for row in rows if len(row) >= 3 and not row[0].startswith("/")}
+    types: set[str] = set()
+    for row in rows:
+        if len(row) < 3:
+            continue
+        if row[0].startswith("/"):
+            continue
+        types.add(row[1])
 
     assert report.errors == []
     assert types == set(COMPONENT_WHITELIST)
