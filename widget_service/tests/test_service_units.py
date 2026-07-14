@@ -408,6 +408,68 @@ def test_a2ui_model_client_real_mode_forwards_messages(monkeypatch):
     assert A2UIModelClient(use_mock=False).generate(messages) == "forwarded"
 
 
+class _FakeModelStreamResponse:
+    def __init__(self, lines: list[str | bytes]) -> None:
+        self.lines = lines
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback):
+        return False
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def iter_lines(self, decode_unicode: bool = False):
+        return iter(self.lines)
+
+
+def _model_stream_line(delta: dict, prefix: str = "data: ") -> str:
+    chunk = {"choices": [{"delta": delta}]}
+    return prefix + json_module.dumps(chunk, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("reasoning_key", ["reasoning_content", "reasoning"])
+def test_a2ui_model_client_reads_qwen_reasoning_stream(
+    monkeypatch,
+    reasoning_key,
+):
+    """验证 Qwen 推理字段可在 content 为空时承载最终 DSL。"""
+    first = '["root","Column",{"width":"matchParent","space":8},["title"]]\n'
+    second = '["title","Text",{"content":"Weather"}]'
+    response = _FakeModelStreamResponse(
+        [
+            _model_stream_line({"content": None, reasoning_key: first}, prefix="data:"),
+            _model_stream_line({"content": None, reasoning_key: second}),
+            "data: [DONE]",
+        ]
+    )
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: response)
+    client = A2UIModelClient(use_mock=False)
+    monkeypatch.setattr(client, "calc_sign", lambda _payload: "signed")
+
+    result = client.generate([{"role": "user", "content": "weather card"}])
+
+    assert result == first + second
+
+
+def test_a2ui_model_client_prefers_answer_content_over_reasoning():
+    """验证同时存在思考过程和最终答案时只返回 content。"""
+    response = _FakeModelStreamResponse(
+        [
+            _model_stream_line({"content": None, "reasoning_content": "thinking"}),
+            _model_stream_line({"content": "[\"root\"", "reasoning_content": None}),
+            _model_stream_line({"content": "]", "reasoning_content": None}).encode(),
+            "data: [DONE]",
+        ]
+    )
+
+    result = A2UIModelClient(use_mock=False)._collect_stream_text(response)
+
+    assert result == '["root"]'
+
+
 def test_response_planner_returns_structured_status():
     """验证 ResponsePlanner 返回结构化状态对象。
 

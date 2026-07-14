@@ -366,6 +366,9 @@ class WidgetGenerationService:
             - genui：模型生成的三行 JSONL 字符串。
             出参：校验错误列表；空列表表示通过。
             """
+            if not genui.strip():
+                logger.error(f"a2ui_genui_empty uid={request.uid}")
+                return ["model output is empty"]
             # 每次模型输出都临时组装 artifact，再用同一套 Validator 校验完整契约。
             if not settings.enable_artifact_validation:
                 logger.info(

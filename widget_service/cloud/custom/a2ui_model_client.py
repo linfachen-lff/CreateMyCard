@@ -131,96 +131,49 @@ class A2UIModelClient:
         )
         return authorization
 
-    def extract_genui_payload(self, text):
-        """
-        如果响应以'''genui 开头，则剔除前后标记，返回中间的JSON字符串
-        否则原样返回。
-        """
+    def extract_genui_payload(self, text: str) -> str:
+        """移除模型可能返回的 genui Markdown 围栏。"""
         text = text.strip()
-        # 匹配三种引号开头（可能是三个双引号或三个单引号，此处按三个双引号处理）
-        if text.startswith('```genui'):
-            # 去掉开头 """genui （注意可能有换行）
-            content = text[len('```genui'):].strip()
-            # 如果结尾有 """，去掉它
-            if content.endswith('```'):
+        if text.startswith("```genui"):
+            content = text[len("```genui") :].strip()
+            if content.endswith("```"):
                 content = content[:-3].strip()
             return content
-        else:
-            return text
+        return text
 
     def _generate_from_real_model(
-            self,
-            messages: list,
-            max_tokens: int = 128000,
-            stream: bool = True,
-            timeout: int = 600,
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int = 128000,
+        stream: bool = True,
+        timeout: int = 600,
     ) -> str:
-        """
-        调用小模型接口生成 DSL
-
-        参数：
-            messages     : 对话消息列表，如 [{"role":"user","content":"你好"}]
-            max_tokens   : 最大生成token数
-            stream       : 是否流式
-            timeout      : 请求超时（秒）
-        返回：
-            服务端返回的str字典。
-        """
+        """调用真实模型接口并提取 DSL 文本。"""
         payload = {
             "model": self.settings.model_name,
             "messages": messages,
             "max_tokens": max_tokens,
-            "stream": stream
+            "stream": stream,
         }
         payload_str = json.dumps(payload, ensure_ascii=False)
-
         authorization = self.calc_sign(payload_str)
-
         headers = {
             "Authorization": authorization,
             "Content-Type": "application/json",
-            "Accept": "text/event-stream"
+            "Accept": "text/event-stream",
         }
 
-        collected_texts = []
-        reasoning_parts = []
         start = time.perf_counter()
         try:
             with requests.post(
-                    self.settings.model_url,
-                    data=payload_str,
-                    headers=headers,
-                    timeout=timeout,
-                    stream=True
+                self.settings.model_url,
+                data=payload_str,
+                headers=headers,
+                timeout=timeout,
+                stream=True,
             ) as response:
-                for line in response.iter_lines(decode_unicode=True):
-                    logger.info(line)
-                    if line.startswith("data: "):
-                        data = line[6:]
-                        if data == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data)
-                        except json.JSONDecodeError:
-                            continue
-
-                        choices = chunk.get("choices")
-                        if not choices or len(choices) == 0:
-                            continue
-
-                        first_choice = choices[0]
-                        delta = first_choice.get("delta")
-                        if not delta:
-                            continue
-
-                        text = delta.get("content", "")
-                        reasoning = delta.get("reasoning", "")
-                        collected_texts.append(text)
-                        reasoning_parts.append(reasoning)
-
-            content_text = "".join(collected_texts)
-            reason_text = "".join(reasoning_parts)
-            full_text = content_text if content_text else reason_text
+                response.raise_for_status()
+                full_text = self._collect_stream_text(response)
             logger.info(f"小模型返回的内容：{full_text}")
 
             dsl_text = self.extract_genui_payload(full_text)
@@ -242,3 +195,87 @@ class A2UIModelClient:
             logger.error(f"\n发生未预料到的错误: {e}")
 
         return ""
+
+    def _collect_stream_text(self, response) -> str:
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        for raw_line in response.iter_lines(decode_unicode=True):
+            logger.info(raw_line)
+            data = self._stream_data(raw_line)
+            if data is None:
+                continue
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                logger.warning("a2ui_model_invalid_stream_chunk")
+                continue
+
+            delta = self._first_choice_payload(chunk)
+            if not delta:
+                continue
+            content = self._text_fragment(delta.get("content"))
+            if not content:
+                content = self._text_fragment(delta.get("text"))
+            reasoning = self._reasoning_fragment(delta)
+            if content:
+                content_parts.append(content)
+            if reasoning:
+                reasoning_parts.append(reasoning)
+
+        content_text = "".join(content_parts)
+        if content_text:
+            return content_text
+        return "".join(reasoning_parts)
+
+    def _stream_data(self, raw_line: str | bytes) -> str | None:
+        if isinstance(raw_line, bytes):
+            line = raw_line.decode("utf-8", errors="replace").strip()
+        else:
+            line = raw_line.strip()
+        if not line:
+            return None
+        if line.startswith("data:"):
+            return line[len("data:") :].strip()
+        if line.startswith("{"):
+            return line
+        return None
+
+    def _first_choice_payload(self, chunk: object) -> dict:
+        if not isinstance(chunk, dict):
+            return {}
+        choices = chunk.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return {}
+        first_choice = choices[0]
+        if not isinstance(first_choice, dict):
+            return {}
+        delta = first_choice.get("delta")
+        if isinstance(delta, dict):
+            return delta
+        message = first_choice.get("message")
+        if isinstance(message, dict):
+            return message
+        return first_choice
+
+    def _reasoning_fragment(self, payload: dict) -> str:
+        reasoning = self._text_fragment(payload.get("reasoning_content"))
+        if reasoning:
+            return reasoning
+        return self._text_fragment(payload.get("reasoning"))
+
+    def _text_fragment(self, value: object) -> str:
+        if isinstance(value, str):
+            return value
+        if not isinstance(value, list):
+            return ""
+
+        parts: list[str] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+        return "".join(parts)

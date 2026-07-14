@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from api.schemas import GenerateWidgetCardRequest
+from config.config import get_settings
 from custom.a2ui_model_client import A2UIModelClient
 from models.generation import DeviceContext, GenerationOptions
 from models.service import ArtifactSaveResult
@@ -450,6 +451,32 @@ def test_generation_service_rejects_fenced_model_output_before_save(monkeypatch)
         raise AssertionError("invalid artifact must not be saved")
 
     monkeypatch.setattr(A2UIModelClient, "generate", invalid_generate)
+    monkeypatch.setattr(ArtifactStore, "save", unexpected_save)
+
+    response = WidgetGenerationService().generate_widget_card_compact_dsl(
+        _generation_request()
+    )
+
+    assert response.status.value == "failed"
+    assert response.errorCode == "VALIDATION_FAILED"
+    assert response.artifact is None
+    assert calls == {"generate": 2, "save": 0}
+
+
+def test_generation_service_rejects_empty_output_when_validation_disabled(monkeypatch):
+    """验证关闭协议校验时仍不允许保存空 genui。"""
+    calls = {"generate": 0, "save": 0}
+
+    def empty_generate(self, prompt, protocol_profile):
+        calls["generate"] += 1
+        return ""
+
+    def unexpected_save(self, artifact):
+        calls["save"] += 1
+        raise AssertionError("empty artifact must not be saved")
+
+    monkeypatch.setattr(get_settings(), "enable_artifact_validation", False)
+    monkeypatch.setattr(A2UIModelClient, "generate", empty_generate)
     monkeypatch.setattr(ArtifactStore, "save", unexpected_save)
 
     response = WidgetGenerationService().generate_widget_card_compact_dsl(
