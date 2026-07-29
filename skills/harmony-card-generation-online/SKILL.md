@@ -8,33 +8,32 @@ metadata:
     - bundleName: "com.omega_w_0823.hmservice"
       toolName: "getDataCapabilitySchemas"
     - bundleName: "com.omega_w_0823.hmservice"
-      toolName: "generateWidgetCard"
+      toolName: "generateWidgetCardTerseDslNested2"
 ---
 
 # Harmony 卡片生成（云侧工具编排版）
 
 ## 执行入口
 
-先判断 create/edit 模式，再按场景加载最少必要资料：
+此版本使用仅支持静态新建的 TerseDSL-Nested-2 生成工具：
 
-- 所有请求先读取 [`references/orchestration-workflow.md`](references/orchestration-workflow.md)，按完整十步流程推进。
-- create、删除数据能力或修改数据参数：再读取 [`references/candidate-planning.md`](references/candidate-planning.md) 和 [`references/tool-contracts.md`](references/tool-contracts.md)。
-- 纯视觉、布局、文案或尺寸 edit：只继续读取 [`references/tool-contracts.md`](references/tool-contracts.md) 的 edit 契约。
+- 只处理 create 静态卡片请求；编辑、动态数据和点击事件需求说明当前模式不支持，不调用生成工具。
+- 静态创建只读取当前运行时第三个工具的 schema，并按本文件的调用前硬校验调用它。
 - 处理最终工具结果时读取 [`references/response-policy.md`](references/response-policy.md)。
-- 仅在联调、排障或核对回归格式时读取 [`references/examples.md`](references/examples.md) 和 [`references/tools/`](references/tools/) 中的工具 JSON 快照。
+- 仅在联调、排障或核对回归格式时读取 [`references/tools/`](references/tools/) 中的工具 JSON 快照。
 
 完整索引见 [`references.md`](references.md)。
 
 ## 模式与调用门禁
 
-- 创建请求走 create；“修改、调整、删除、替换、换颜色、改尺寸、继续优化”等请求走 edit。
-- edit 未指定目标时使用当前会话最近一次成功或降级结果；明确目标无法对应时才追问。来源只能取目标卡片工具业务 payload 的真实 `artifactUrl`；没有可用来源时要求先创建，不得改走 create。
+- 仅支持 create。出现“修改、调整、删除、替换、换颜色、改尺寸、继续优化”等编辑语义时，说明当前生成模式不支持连续编辑并停止；不得删除编辑信息后伪装为新建。
+- 请求动态数据能力、点击事件或其它运行时交互时，说明当前生成模式仅支持静态卡片并停止；不得伪造静态数据或调用生成工具。
 - 每次调用工具前检查是否缺少会改变核心意图、候选选择、目标对象、地点、时间范围、动作目标或业务入参的用户信息；有则集中追问并等待回答。设备能力、能力 ID、schema 等内部信息不向用户确认。
 - 每次调用前读取当前运行时 `tools` schema，并执行下方“调用前硬校验”。参考资料、示例、历史字段和内部类结构不能覆盖运行时 schema。
 
 ## 职责边界
 
-本 Skill 只负责模式识别、候选编排、工具调用和用户回复。微服务负责真实设备能力裁决、最终 CardSpec、A2UI DSL、校验、降级、重试和 artifact 上传；端侧负责下载、渲染、安装与运行时刷新。
+本 Skill 只负责静态新建识别、工具调用和用户回复。微服务负责最终 CardSpec、A2UI DSL、校验、降级、重试和 artifact 上传；端侧负责下载、渲染、安装与运行时刷新。
 
 不自行生成、下载、解析或修改 DSL、CardSpec、A2UI prompt 或 artifact；不使用离线能力清单、历史模板或旧协议补足在线结果；不提前承诺任何动态能力一定可用。
 
@@ -70,15 +69,15 @@ metadata:
 - **参数**: {"type":"object","properties":{"dataCapabilityIds":{"type":"Array<String>","description":"需要加载完整 schema 的数据能力 ID 列表，至少 1 个。","required":[],"properties":{"ArrayItem":{"type":"String","description":"完整 schema 的数据能力 ID "}}}},"required":["dataCapabilityIds"]}
 - **约束**: 必须在调用 getWidgetCapabilityOverview 获取能力列表之后调用。入参 dataCapabilityIds 从能力概述返回的数据能力 ID 中选取。
 
-### Function: generateWidgetCard
-- **toolName**: generateWidgetCard
-- **description**: 提交用户需求和候选计划首次生成卡片，或通过上一版 artifact URL 连续编辑卡片。
-- **参数**: {"type":"object","properties":{"sourceArtifactUrl":{"type":"String","description":"可选。上一版完整 artifact 的真实 URL；缺失表示首次生成，非空表示编辑"},"size":{"type":"String","description":"主 Agent 建议尺寸"},"candidateDataBindings":{"type":"Array","description":"已通过能力概述裁决的候选数据能力调用列表","required":[],"properties":{"ArrayItem":{"type":"Object","description":"候选数据能力","required":[],"properties":{"candidateOutputFields":{"type":"Array<String>","description":"可选候选展示字段 JSON Pointer；必须能从对应能力 outputSchema 推导","required":[],"properties":{"ArrayItem":{"type":"String","description":"可选候选展示字段 JSON Pointer"}}},"arguments":{"type":"Object","description":"参数"},"capabilityId":{"type":"String","description":"能力ID"},"writeResultTo":{"type":"String","description":"结果写入路径"}}}}},"candidateEventCandidates":{"type":"Array","description":"候选点击事件列表；事件 action 只能来自能力概述返回的事件能力说明","required":[],"properties":{"ArrayItem":{"type":"Object","description":"事件 action"}}},"userQuery":{"type":"String","description":"首次生成时为原始需求，编辑时只表达本轮修改"},"candidateAssetIds":{"type":"Array<String>","description":"候选素材 ID 列表","required":[],"properties":{"ArrayItem":{"type":"String","description":"候选素材 ID"}}},"title":{"type":"String","description":"建议写入最终 CardSpec 的静态短标题，尽量不超过 8 个字"},"description":{"type":"String","description":"建议写入最终 CardSpec 的静态短概述，尽量不超过 12 个字"}},"required":["userQuery"]}
+### Function: generateWidgetCardTerseDslNested2
+- **toolName**: generateWidgetCardTerseDslNested2
+- **description**: 使用受限嵌套 DSL 生成静态 HarmonyOS A2UI Form 卡片 artifact。
+- **参数**: {"type":"object","properties":{"userQuery":{"type":"String","description":"用户的静态卡片需求"},"size":{"type":"String","description":"卡片尺寸，只能为 2x2 或 2x4"},"title":{"type":"String","description":"静态短标题"},"description":{"type":"String","description":"静态短说明"},"candidateAssetIds":{"type":"Array<String>","description":"可选本地素材 ID 列表","required":[],"properties":{"ArrayItem":{"type":"String","description":"候选素材 ID"}}}},"required":["userQuery","title","description"]}
 
 ## 输出与安全
 
 - 业务状态、固定回复、`XX` 提炼和 `genWidgetResult` 格式只以 [`references/response-policy.md`](references/response-policy.md) 为准；调用样例只以 [`references/examples.md`](references/examples.md) 为准。
-- 只输出 `generateWidgetCard` 业务 payload 返回的真实 `artifactUrl`；edit 成功的新 URL 必须不同于来源 URL。
-- 不编造能力 ID、事件目标、素材 ID、用户数据或 URL；不选择、加载或传递不可用数据能力；不暴露 schema、provider、错误码、requestId、items、原始 data 或内部草稿。
+- 只输出 `generateWidgetCardTerseDslNested2` 业务 payload 返回的真实 `artifactUrl`。
+- 不编造素材 ID、用户数据或 URL；不传递动态数据绑定、事件或来源 artifact；不暴露 schema、provider、错误码、requestId、items、原始 data 或内部草稿。
 - 任一必要工具不可用、调用失败、结果无法解析或字段不合法时终止本轮，按回复策略处理；不得模拟成功、输出替代产物或读取离线资料补足结果。
 - 存在用户待确认信息时不得抢先调用工具；追问后等待用户回答，再重新执行调用门禁。
