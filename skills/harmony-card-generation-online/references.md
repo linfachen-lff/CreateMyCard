@@ -1,6 +1,6 @@
 # Harmony 卡片生成参考索引
 
-此 skill 是云侧工具编排版，只负责 create/edit 模式判断、候选选择、来源 URL 传递、工具调用和用户回复组织。卡片产物必须由 `generateWidgetCard` 生成；任一必要工具不可用、调用失败或结果不完整时终止本轮生成或编辑。
+此 skill 是云侧工具编排版，只负责静态 create 模式判断、工具调用和用户回复组织。卡片产物必须由 `generateWidgetCardTerseDslNested2` 生成；任一必要工具不可用、调用失败或结果不完整时终止本轮生成。
 
 本版本只实现云侧工具编排。旧版 `harmony-card-generation`、历史模板和离线资料不能作为生产候选或产物依据。
 
