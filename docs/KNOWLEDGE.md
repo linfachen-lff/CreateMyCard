@@ -95,6 +95,15 @@
 
 与 search 无关（云侧与 skills 同步问题，可参照 AGENTS.md「从 Skill 批量同步 card_validation」约束）。
 
+### 类别 D：test_compact_dsl_a2ui_converter.py 的 13 个失败（2026-08-09 全量跑通后补充）
+该文件此前未纳入基线，全量运行后发现有 **13 个既有失败**，同为「转换器行为与测试断言不一致」：
+- 根组件约束：`test_accepts_root_row_for_wide_card`（期望接受 root/Row，当前要求 root/Column）。
+- design 别名/环组件展开：`test_expands_ring_unit_*`（5 个）、`test_expands_only_current_prompt_design_aliases`、
+  `test_preserves_*_button_image_child`（2 个）。
+- 契约校验：`test_rejects_*`（legacy_action/event_asset/ring_unit/empty_button_label/missing_root，5 个）。
+
+均在 dev 分支既有，未由 search 整合引入；同类别 A 的转换器行为问题，需团队统一裁定转换器方向后处理。
+
 ## 已知既有隐患（2026-08-09）
 
 - ✅ 已修：`a2ui_model_client.py:11` `import json_repair` 缺依赖，导致全部测试 collect 失败。已在 requirements.txt / pyproject.toml 补 `json_repair>=0.25.0` 并安装（0.62.0）。此问题会阻断测试运行，直接卡住 search 整合 TDD，故按约定修复并上报。
