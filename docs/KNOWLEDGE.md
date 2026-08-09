@@ -58,6 +58,15 @@
   `userQuery + dataModelSchema 叶子 description`，让结构不一致但语义相近的模板也能被召回。
   真实库验证：2x4 请求（全部模板 2x2 被尺寸滤掉）→ 走 description 兜底 → keyword_match。
 
+## card-template 目录（2026-08-09）
+
+- 20 个卡片素材 md（`q*_artifact.md`）已从 subagent_genui/taskspec/md 复制到 `card-template/cards/`，
+  作为仓库内建库数据源（build_db 默认读取，不再指向项目外路径）。
+- `card-template/build_db.py` 为自包含建库脚本（内联 deflate、sys.path 注入 vendored search），
+  `py -3.12 build_db.py` 直接运行；`cloud/search_integration/build_db.py` 为打包版，默认源一致。
+- `card-template/asset-library.md` 为素材库索引；`card-template/readme.md` 说明建库用法。
+- 新增卡片素材：往 `card-template/cards/` 放入同格式 md 后跑 `build_db.py` 即可。
+
 ## 第 7 步关键决策（与用户对齐）
 
 - input_data 形状：**降维为 sampleValue 实例**（structure_match 才能真正绑定短路）。

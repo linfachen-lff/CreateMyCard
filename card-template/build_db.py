@@ -1,45 +1,52 @@
-"""从 ``card-template/cards`` 的 artifact 产物构建 search 模板库。
+"""从 ``card-template/cards`` 的 artifact md 构建 search 模板库。
 
-用法（默认读取仓库内 ``card-template/cards/``，输出到
-``vendor_search/search/data/templates.sqlite3``，不依赖项目外路径）：
+直接运行（无需任何参数，默认读取本目录 ``cards/``，输出到
+``widget_service/vendor_search/search/data/templates.sqlite3``）：
 
-    py -3.12 -m cloud.search_integration.build_db --replace
+    py -3.12 build_db.py
 
 每个 ``q*_artifact.md`` 含 cardspec / genui / schema / taskspec / effectivecapabilities /
 removedcapabilities / generationplan / meta / designcompactdsl 九个 fenced block。
-本脚本取其 ``taskspec.dataModelSchema``（降维为 sampleValue 实例）作为 input_json、
-``designcompactdsl``（去掉 data 行）作为 reference_jsonl，经 search 校验后入库。
+本脚本取 ``taskspec.dataModelSchema``（降维为 sampleValue 实例）作为 input_json、
+``designcompactdsl``（去掉 data 行）作为 reference_jsonl，经 vendored search 校验后入库。
 
-另有自包含可执行副本：``card-template/build_db.py``（直接运行，供独立使用）。
+依赖：jieba；vendored search 模块（``widget_service/vendor_search/``）。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import logging
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
-from . import vendored_loader
-from .deflate import deflate_data_model_schema
+# 让 vendored search 包可导入（保持自包含，不依赖 cloud/search_integration）
+REPO_ROOT = Path(__file__).resolve().parents[1]
+VENDOR_SEARCH = REPO_ROOT / "widget_service" / "vendor_search"
+if str(VENDOR_SEARCH) not in sys.path:
+    sys.path.insert(0, str(VENDOR_SEARCH))
 
-logger = logging.getLogger(__name__)
+from search.hashing import compute_shape_signature  # noqa: E402
+from search.repository import SQLiteTemplateDAO, TemplateRecord  # noqa: E402
+from search.validation import bind_template, validate_template  # noqa: E402
 
 _OPEN_FENCE_RE = re.compile(r"^```(\w+)\s*$")
 
-# 默认数据源与输出均在仓库内，不依赖项目外路径。
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_SOURCE = _REPO_ROOT / "card-template" / "cards"
-DEFAULT_DB = (
-    _REPO_ROOT
-    / "widget_service"
-    / "vendor_search"
-    / "search"
-    / "data"
-    / "templates.sqlite3"
-)
+
+def deflate_data_model_schema(schema: Any) -> Any:
+    """把 dataModelSchema 叶子 ``{type, description, sampleValue}`` 降维为 sampleValue。
+
+    与 ``widget_service/cloud/search_integration/deflate.py`` 保持一致。
+    """
+    if isinstance(schema, dict):
+        if "sampleValue" in schema:
+            return schema["sampleValue"]
+        return {key: deflate_data_model_schema(value) for key, value in schema.items()}
+    if isinstance(schema, list):
+        return [deflate_data_model_schema(item) for item in schema]
+    return schema
 
 
 def parse_artifact_md(path: Path) -> dict[str, str]:
@@ -78,6 +85,15 @@ def reference_from_design_dsl(design_dsl: str) -> str:
     return "\n".join(component_lines)
 
 
+def _safe_tokenize(text: str) -> list[str]:
+    try:
+        from search.tokenization import tokenize
+
+        return tokenize(text)
+    except Exception:  # noqa: BLE001 - 分词失败时退化为空标签
+        return []
+
+
 def derive_metadata(cardspec: dict, taskspec: dict, generationplan: dict) -> tuple[str, list[str]]:
     """从产物派生 description 与 tags。
 
@@ -95,20 +111,8 @@ def derive_metadata(cardspec: dict, taskspec: dict, generationplan: dict) -> tup
     return description, tags
 
 
-def _safe_tokenize(text: str) -> list[str]:
-    try:
-        from search.tokenization import tokenize
-
-        return tokenize(text)
-    except Exception:  # noqa: BLE001 - 分词失败时退化为空标签
-        return []
-
-
-def build_template_record(parsed: dict, template_id: str) -> Any:
+def build_template_record(parsed: dict, template_id: str) -> TemplateRecord:
     """从解析块构建一条 TemplateRecord；reference 结构非法时抛异常。"""
-    if not vendored_loader.search_available():
-        raise RuntimeError(f"vendored search 不可用: {vendored_loader.import_error()}")
-    search = vendored_loader.search
     cardspec = json.loads(parsed["cardspec"])
     taskspec = json.loads(parsed["taskspec"])
     generationplan = json.loads(parsed["generationplan"])
@@ -120,13 +124,11 @@ def build_template_record(parsed: dict, template_id: str) -> Any:
     input_payload = deflate_data_model_schema(schema)
     reference_jsonl = reference_from_design_dsl(design_dsl)
 
-    from search.validation import validate_template
-
     validate_template(reference_jsonl, mode="reference")
-    signature = search.compute_shape_signature(input_payload)
+    signature = compute_shape_signature(input_payload)
     description, tags = derive_metadata(cardspec, taskspec, generationplan)
     size = cardspec.get("suggestSize") or None
-    return search.TemplateRecord(
+    return TemplateRecord(
         template_id=template_id,
         description=description,
         tags=tuple(tags),
@@ -141,8 +143,6 @@ def build_template_record(parsed: dict, template_id: str) -> Any:
 def _bind_check(reference_jsonl: str, input_payload: dict, template_id: str) -> str | None:
     """软门禁：用自身样例数据试渲染；失败仅记录，模板仍可作 keyword_match 使用。"""
     try:
-        from search.validation import bind_template
-
         bind_template(reference_jsonl, input_payload)
     except Exception as exc:  # noqa: BLE001 - 绑定失败仅告警
         return f"{template_id}: bind check failed: {exc}"
@@ -150,24 +150,23 @@ def _bind_check(reference_jsonl: str, input_payload: dict, template_id: str) -> 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="build search template db from artifact md")
+    parser = argparse.ArgumentParser(
+        description="build search template db from card-template artifact md"
+    )
     parser.add_argument(
         "--source",
-        default=str(DEFAULT_SOURCE),
-        help="卡片 artifact md 目录（默认 card-template/cards）",
+        default=str(Path(__file__).resolve().parent / "cards"),
+        help="卡片 artifact md 目录（默认本目录 cards/）",
     )
     parser.add_argument(
         "--db",
-        default=str(DEFAULT_DB),
-        help="输出 sqlite3 路径（默认 vendor_search/search/data/templates.sqlite3）",
+        default=str(REPO_ROOT / "widget_service" / "vendor_search" / "search" / "data" / "templates.sqlite3"),
+        help="输出 sqlite3 路径",
     )
     parser.add_argument("--replace", action="store_true", help="覆盖已有模板")
     args = parser.parse_args()
 
-    if not vendored_loader.search_available():
-        raise SystemExit(f"vendored search 不可用: {vendored_loader.import_error()}")
-    search = vendored_loader.search
-    dao = search.SQLiteTemplateDAO(args.db)
+    dao = SQLiteTemplateDAO(args.db)
     dao.initialize()
 
     records = []

@@ -158,5 +158,6 @@
 | `docs/KNOWLEDGE.md` | 项目经验记录 |
 | `harmony-card-dsl-validation/` | DSL 校验相关 |
 | `template/` / `testdata/` / `resources/` | 模板/测试数据/资源 |
+| `card-template/` | 卡片模板素材（`cards/q*_artifact.md`）+ 素材库索引（`asset-library.md`）+ 自包含建库脚本（`build_db.py`），详见 `card-template/readme.md` |
 | `release.sh` | skills 打包发布脚本 |
 | `widget_service/vendor_search/` | vendored search 模块（字节级复制自 subagent_genui@origin/search） |
