@@ -55,14 +55,33 @@
 ## 第 5 步验证结果（2026-08-09，dev-search 分支基线）
 
 - 环境：Python 3.12.10，`pip install -e .[dev]`。注意本机 `C:\Python312\Scripts` 写 console-script（`.exe`）会报 `WinError 2`（.deleteme 逻辑），但不影响库代码安装，只影响带 CLI 入口的包（websockets/watchfiles 等）的 `.exe` 生成。
-- 测试基线：`pytest tests/test_service_units.py tests/test_model_routing.py tests/test_multi_round_edit.py tests/test_tool_dispatch_routes.py -q` → **279 通过 / 11 失败**。11 个失败均为 dev 分支既有（与本次改动无关），集中在：
-  - terse/design-compact 转换相关：`test_terse_dsl_nested2_converts_nested_tree_to_standard_a2ui`、`test_terse_dsl_nested2_generation_uses_local_prompt_and_converter`、`test_a2ui_model_client_selects_design_compact_mock_by_task_size[2x2/2x4]`、`test_a2ui_model_client_converts_design_dsl_to_standard_dsl`、`test_design_converter_expands_latest_design_tokens`、`test_design_converter_reads_protocol_file_from_selected_design_profile`、`test_compact_route_mock_converts_design_dsl_before_saving`、`test_terse_nested2_route_mock_converts_local_dsl_before_saving`
-  - 覆盖/快照相关：`test_cloud_registry_covers_offline_skill_capability_inventory`、`test_card_validation_snapshot_covers_all_online_runtime_files`
-  - 典型原因：转换结果 `createSurface` 含 `width` 而测试断言不含（转换器行为与断言不一致）。**尚未修**（按用户约定不改既有 bug），搜索整合时注意 compact 转换路径的行为。
+- 测试基线：`pytest tests/test_service_units.py tests/test_model_routing.py tests/test_multi_round_edit.py tests/test_tool_dispatch_routes.py -q` → **279 通过 / 11 失败**。11 个失败均为 dev 分支既有（本次改动未引入），**按用户约定不改既有 bug，只详细记录，供后续另立任务处理**。详见下节「11 个既有失败详解」。
 - 服务启动：mock 模式 `py -3.12 cloud\start_websocket_server.py` → `/health` 返回 `{"status":"ok"}`，无需任何 key。
+
+## 11 个既有测试失败详解（2026-08-09，未修，另立任务）
+
+全部为 dev 分支基线失败。按根因分 3 类：
+
+### 类别 A：createSurface 的 width 行为（9 个）
+转换器 `cloud/services/compact_dsl_a2ui_converter.py:720-725` **当前会在 createSurface 输出 `width`**，值来自 `_surface_dimensions(size, protocol_profile)`，本机跑出 160/320（即 mock DSL 里 root 组件的 width）。测试群期望不一致，处于迁移中间态：
+
+- 期望 **createSurface 不含 width**（4 个）：
+  `test_a2ui_model_client_selects_design_compact_mock_by_task_size[2x2-160]`、`[2x4-320]`、`test_a2ui_model_client_converts_design_dsl_to_standard_dsl`、`test_design_converter_reads_protocol_file_from_selected_design_profile`
+- 期望 **width 为尺寸表映射值**（4 个）：`test_terse_dsl_nested2_converts_nested_tree_to_standard_a2ui`（期望 140，实 160）、`test_terse_dsl_nested2_generation_uses_local_prompt_and_converter`（期望 298，实 320）、`test_compact_route_mock_converts_design_dsl_before_saving`（期望 300，实 320）、`test_terse_nested2_route_mock_converts_local_dsl_before_saving`（期望 140，实 160）
+
+**方向未定**：是「转换器把 root width 透传进 createSurface 属新行为、测试未同步」，还是「转换器改坏」，从测试自身无法判断，需团队定夺。**直接影响**：search 短路产物（rendered_jsonl 过同一转换器）的 createSurface 也会带 width，与当前链路行为一致。
+
+### 类别 B：design token 展开缺失（1 个）
+`test_design_converter_expands_latest_design_tokens`：`hero.styles.fillColor` 期望 `#33000000`，实际 KeyError —— 最新 design token 未展开成具体色值。
+
+### 类别 C：云侧/skills 清单快照漂移（2 个）
+- `test_cloud_registry_covers_offline_skill_capability_inventory`：云侧能力注册表 assets 比离线 skill 清单多 `resources/base/media/startIcon.png`。
+- `test_card_validation_snapshot_covers_all_online_runtime_files`：云侧 `card_validation/` 比 skill 侧多 `schemas/capability.countdown.schema.json`。
+
+与 search 无关（云侧与 skills 同步问题，可参照 AGENTS.md「从 Skill 批量同步 card_validation」约束）。
 
 ## 已知既有隐患（2026-08-09）
 
 - ✅ 已修：`a2ui_model_client.py:11` `import json_repair` 缺依赖，导致全部测试 collect 失败。已在 requirements.txt / pyproject.toml 补 `json_repair>=0.25.0` 并安装（0.62.0）。此问题会阻断测试运行，直接卡住 search 整合 TDD，故按约定修复并上报。
 - `DesignCompactProcessor.process` 内部会经 `repair_compact_dsl_binding_paths`/`validate_compact_dsl_context` 改写源 DSL 绑定路径。search 短路喂入 rendered_jsonl 后需验证不破坏已绑定数据（search 整合测试重点）。
-- 上节 11 个既有测试失败未修，需另立任务处理。
+- 类别 A/B/C 的 11 个失败未修，需另立任务处理。
