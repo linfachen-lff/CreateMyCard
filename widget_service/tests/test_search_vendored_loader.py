@@ -183,6 +183,49 @@ async def test_store_unavailable_degrades_to_miss(search_api, monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_button_image_child_roundtrip(search_api):
+    """本地补丁：validate_template 接受 Button+Image 子节点，且可结构命中出卡。
+
+    MOCK DATA: 手写含 Button+Image 子节点的模板骨架与输入。
+    """
+    reference = (
+        '["root","Column",{},["title","btn"]]\n'
+        '["title","Text",{"content":{"path":"/name"}}]\n'
+        '["btn","Button",{"label":"查看详情"},["btn_icon"]]\n'
+        '["btn_icon","Image",{"src":{"path":"/icon"}}]'
+    )
+    from search.validation import validate_template
+
+    validated = validate_template(reference, mode="reference")
+    assert validated is not None
+
+    dao = search_api.SQLiteTemplateDAO(":memory:")
+    dao.initialize()
+    signature = search_api.compute_shape_signature({"name": "x", "icon": "y"})
+    dao.upsert(
+        search_api.TemplateRecord(
+            template_id="t-btn",
+            description="按钮卡片",
+            tags=("按钮",),
+            reference_jsonl=reference,
+            input_json=json.dumps({"name": "x", "icon": "y"}),
+            structure_hash=signature.signature,
+            signature_version=signature.version,
+        )
+    )
+    service = search_api.SearchService(dao)
+    result = await search_api.search_template(
+        search_api.SearchRequest(
+            query="按钮", input_data={"name": "Bob", "icon": "asset://x.png"}
+        ),
+        service=service,
+    )
+    assert result.outcome == "structure_match"
+    assert '"Bob"' in result.rendered_jsonl
+    assert "btn_icon" in result.rendered_jsonl
+
+
+@pytest.mark.asyncio
 async def test_search_db_path_env_respected(search_api, monkeypatch, tmp_path):
     """SEARCH_DB_PATH 环境变量决定默认服务使用哪个数据库。"""
     db_path = tmp_path / "custom" / "templates.sqlite3"

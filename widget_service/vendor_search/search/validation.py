@@ -238,7 +238,10 @@ def validate_template(  # noqa: C901, PLR0912, PLR0915 - Compact protocol valida
         if children is None:
             continue
         if isinstance(children, list):
-            if component_type.lower() not in _CONTAINER_TYPES:
+            # LOCAL PATCH: Button 也允许 list children（见 VENDORED.md 补丁说明）
+            if component_type.lower() not in _CONTAINER_TYPES and (
+                component_type.lower() != "button"
+            ):
                 _fail(
                     "unsupported_children",
                     f"{component_type} cannot have tuple children",
@@ -282,6 +285,26 @@ def validate_template(  # noqa: C901, PLR0912, PLR0915 - Compact protocol valida
                     "missing_child_component",
                     f"{parent} references undefined child {child}",
                 )
+    # LOCAL PATCH: Button 子节点必须是恰好一个 Image（镜像转换器 _validate_button_image_children）。
+    # 见 VENDORED.md 补丁说明。
+    for parent, child_ids in static_graph.items():
+        parent_component = components.get(parent)
+        if parent_component is None or parent_component[0].lower() != "button":
+            continue
+        if not child_ids:
+            continue
+        if len(child_ids) != 1:
+            _fail(
+                "unsupported_children",
+                f"Button supports at most one Image child, got {len(child_ids)}",
+            )
+        child_component = components.get(child_ids[0])
+        child_type = child_component[0].lower() if child_component else ""
+        if child_type != "image":
+            _fail(
+                "unsupported_children",
+                f"Button child must be an Image, got {child_type}",
+            )
     for dynamic in dynamic_lists:
         if dynamic.item_component_id not in components:
             _fail(
