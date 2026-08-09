@@ -34,6 +34,15 @@
 | `widget_service/cloud/services/edit_request_normalizer.py` | 编辑模式请求归一化 | `EditRequestNormalizer.normalize_create/normalize_edit` |
 | `widget_service/cloud/services/source_artifact_repository.py` | 读取上一版 artifact | `SourceArtifactRepository.load` |
 
+### 3.5 模板检索缓存（Search）
+
+| 文件 | 职责 | 关键符号 |
+| --- | --- | --- |
+| `widget_service/cloud/search_integration/vendored_loader.py` | vendored search 导入（sys.path 注入 + guard） | `search_available()`、`search_template` |
+| `widget_service/cloud/search_integration/adapter.py` | 请求映射 + SearchDecision 路由 | `SearchIntegrationAdapter.lookup`、`SearchDecision`、`default_input_data_mapper` |
+| `widget_service/vendor_search/` | vendored search 模块（字节级拷贝，勿手改） | `search/` 包 + `api_schema.py`；来源见 `VENDORED.md` |
+| `widget_service/docs/search_cache_integration.md` | 整合设计文档 | |
+
 ## 4. 数据模型与协议
 
 | 文件 | 职责 | 关键符号 |

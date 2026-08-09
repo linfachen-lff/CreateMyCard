@@ -33,6 +33,21 @@
 
 - `before_model_call` 回调：在模型调用前发 AIWidgetStart 指令帧，保证 WS 配对。短路模型调用时也必须保持调用该回调。
 
+## search 整合完成状态（2026-08-09）
+
+- 整合范围：仅 `generateWidgetCardCompactDsl` + `...WithDirective`，且仅新建模式、
+  且 `WIDGET_SERVICE_ENABLE_SEARCH_CACHE=true`（默认关）时生效。
+- 行为：structure_match 短路模型调用直接出卡；keyword_match 注入 `referenceExamples`
+  few-shot；缓存 DSL 转换失败时单次无 few-shot 模型回退（复用 RetryController，max_repair=1）；
+  任何检索异常优雅降级 miss。
+- 相关文档：`docs/云侧方案设计.md`「模板检索缓存」小节、
+  `widget_service/docs/search_cache_integration.md`、`docs/CODEBASE_INDEX.md` 3.5 节。
+- 测试：`tests/test_search_vendored_loader.py`（真实检索三通路）、
+  `tests/test_search_integration_adapter.py`（adapter 单元）、
+  `tests/test_search_cache_integration.py`（route 级 6 用例），全部 MOCK DATA。
+- 待办（步骤 7）：用户提供真实模板数据后用 vendored `manage.py` 建库，
+  并校准 adapter 的 `input_data_mapper` 到真实数据格式。
+
 ## search 模块（vendored）要点（2026-08-09）
 
 - 真实代码在 `D:\Program\work\subagent_genui` 仓库的远程分支 `origin/search`（本地工作区只是 NotImplementedError 占位，**务必用 git 读**）。
