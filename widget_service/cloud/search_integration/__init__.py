@@ -5,3 +5,17 @@
 - ``adapter``：把生成请求映射为 SearchRequest，并统一路由 SearchDecision，
   任何异常都优雅降级为 miss。
 """
+
+from .adapter import (
+    SearchDecision,
+    SearchIntegrationAdapter,
+    SearchOutcomeKind,
+    default_input_data_mapper,
+)
+
+__all__ = [
+    "SearchDecision",
+    "SearchIntegrationAdapter",
+    "SearchOutcomeKind",
+    "default_input_data_mapper",
+]
