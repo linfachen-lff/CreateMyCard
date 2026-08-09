@@ -26,6 +26,7 @@ _COMPONENT_TYPES = frozenset(
         "Progress",
         "Button",
         "ActionUnit",
+        "RingUnit",
         "Checkbox",
     }
 )
@@ -117,6 +118,9 @@ _COMPONENT_STYLE_PROPERTIES = {
 }
 _COMMON_COMPACT_PROPERTIES = frozenset({"design", "onClick"})
 _ACTION_UNIT_PROPERTIES = frozenset({"state", "icon", "actionInk"})
+_RING_UNIT_PROPERTIES = frozenset(
+    {"state", "size", "value", "total", "centerIcon", "reading"}
+)
 _ACTION_UNIT_FORBIDDEN_SKIN_PROPERTIES = frozenset(
     {
         "backgroundColor",
@@ -344,7 +348,7 @@ _TEXT_DESIGNS: dict[str, dict[str, Any]] = {
     "body-s": {"fontSize": 12, "fontWeight": 400},
     "caption-l": {"fontSize": 12, "fontWeight": 500},
     "caption-m": {"fontSize": 10, "fontWeight": 500},
-    "card-title": {"fontSize": 14, "fontWeight": 700},
+    "card-title": {"fontSize": 14, "fontWeight": 500},
     "hero-value": {"fontSize": 28, "fontWeight": 700},
     "hero-label": {"fontSize": 12, "fontWeight": 400},
     "meta-text": {"fontSize": 12, "fontWeight": 400},
@@ -492,6 +496,22 @@ _A2UI_FALLBACK_DIMENSIONS = {
     "2x2": {"width": 160, "height": 160},
     "2x4": {"width": 320, "height": 160},
     "4x2": {"width": 320, "height": 160},
+}
+_RING_UNIT_STATE_ALIASES = {
+    "center-icon": "center-icon",
+    "without-reading": "center-icon",
+    "center-text": "center-text",
+    "center-reading": "center-text",
+    "center-icon-below-text": "center-icon-below-text",
+    "with-reading": "center-icon-below-text",
+}
+_RING_READING_TEXT_STYLES = {
+    "fontSize": 12,
+    "fontWeight": 700,
+    "fontColor": "#E5000000",
+    "maxLines": 1,
+    "textOverflow": "ellipsis",
+    "flexShrink": 0,
 }
 
 
@@ -711,7 +731,6 @@ def convert_compact_dsl_to_a2ui(
                 fallback_root_gradient=fallback_root_gradient,
             )
         )
-
     surface_dimensions = _surface_dimensions(size, protocol_profile)
     version = str(protocol_profile.get("version") or "v0.9")
     messages = [
@@ -967,7 +986,7 @@ def _canonicalize_component_order(rows: list[CompactRow]) -> list[CompactRow]:
     root = components_by_id.get("root")
     if root is None:
         return rows
-    if root.component_type != "Column":
+    if root.component_type not in _CONTAINER_TYPES:
         return rows
 
     ordered_components: list[ComponentRow] = []
@@ -1513,7 +1532,7 @@ def _validate_component_props(
         component_type,
         props,
     )
-    _validate_component_property_types(component_id, props)
+    _validate_component_property_types(component_id, component_type, props)
 
     required_field = _REQUIRED_FIELDS.get(component_type)
     if required_field is not None and required_field not in props:
@@ -1524,10 +1543,15 @@ def _validate_component_props(
         _validate_button_props(component_id, props)
     if component_type == "ActionUnit":
         _validate_action_unit_props(component_id, props)
+    if component_type == "RingUnit":
+        _validate_ring_unit_props(component_id, props)
     _validate_semantic_props(component_id, component_type, props)
     if "onClick" in props:
         _validate_on_click(component_id, props["onClick"])
-    _validate_source_value(props, component_id)
+    _validate_source_value(
+        _source_value_for_validation(component_type, props),
+        component_id,
+    )
 
 
 def _validate_allowed_component_properties(
@@ -1539,6 +1563,8 @@ def _validate_allowed_component_properties(
     allowed.update(_COMMON_COMPACT_PROPERTIES)
     if component_type == "ActionUnit":
         allowed.update(_ACTION_UNIT_PROPERTIES)
+    if component_type == "RingUnit":
+        allowed.update(_RING_UNIT_PROPERTIES)
     allowed.update(_SEMANTIC_FIELDS.get(component_type, frozenset()))
     allowed.update(_COMPACT_ONLY_FIELDS.get(component_type, frozenset()))
     allowed.update(_COMPONENT_STYLE_PROPERTIES.get(component_type, frozenset()))
@@ -1553,6 +1579,7 @@ def _validate_allowed_component_properties(
 
 def _validate_component_property_types(
     component_id: str,
+    component_type: str,
     props: dict[str, Any],
 ) -> None:
     for property_name, value in props.items():
@@ -1579,6 +1606,9 @@ def _validate_component_property_types(
             continue
         if property_name in {"width", "height"}:
             _validate_dimension_property(component_id, property_name, value)
+            continue
+        if component_type == "RingUnit" and property_name == "size":
+            _validate_number_property(component_id, property_name, value)
 
 
 def _validate_number_property(
@@ -1698,6 +1728,103 @@ def _validate_required_action_unit_icon(
             f"{component_id}: icon-round ActionUnit requires icon."
         )
     _validate_image_source(component_id, icon)
+
+
+def _validate_ring_unit_props(component_id: str, props: dict[str, Any]) -> None:
+    state = _canonical_ring_unit_state(component_id, props.get("state"))
+    size = props.get("size")
+    if size not in {44, 52}:
+        raise CompactDslConversionError(
+            f"{component_id}: RingUnit.size must be 44 or 52."
+        )
+    _require_numeric_or_binding(component_id, "RingUnit.value", props.get("value"))
+    if "total" not in props:
+        raise CompactDslConversionError(
+            f"{component_id}: RingUnit.total is required."
+        )
+    _require_numeric_or_binding(component_id, "RingUnit.total", props["total"])
+
+    reading = props.get("reading")
+    center_icon = props.get("centerIcon")
+    if state == "center-icon":
+        _validate_required_ring_center_icon(component_id, center_icon)
+        if reading is not None:
+            raise CompactDslConversionError(
+                f"{component_id}: center-icon RingUnit must not contain reading."
+            )
+        return
+    if state == "center-text":
+        if size != 52:
+            raise CompactDslConversionError(
+                f"{component_id}: center-text RingUnit requires size 52."
+            )
+        if center_icon is not None:
+            raise CompactDslConversionError(
+                f"{component_id}: center-text RingUnit must not contain centerIcon."
+            )
+        _validate_ring_reading(component_id, reading)
+        return
+    _validate_required_ring_center_icon(component_id, center_icon)
+    _validate_ring_reading(component_id, reading)
+
+
+def _canonical_ring_unit_state(component_id: str, state: Any) -> str:
+    if not isinstance(state, str) or not state:
+        raise CompactDslConversionError(
+            f"{component_id}: RingUnit.state must be a non-empty string."
+        )
+    canonical_state = _RING_UNIT_STATE_ALIASES.get(state)
+    if canonical_state is None:
+        valid_states = ", ".join(sorted(_RING_UNIT_STATE_ALIASES))
+        raise CompactDslConversionError(
+            f"{component_id}: unsupported RingUnit.state {state!r}; "
+            f"expected one of: {valid_states}."
+        )
+    return canonical_state
+
+
+def _validate_required_ring_center_icon(component_id: str, icon: Any) -> None:
+    if icon is None:
+        raise CompactDslConversionError(
+            f"{component_id}: RingUnit.centerIcon is required."
+        )
+    _validate_image_source(component_id, icon)
+
+
+def _validate_ring_reading(component_id: str, reading: Any) -> None:
+    if not isinstance(reading, dict):
+        raise CompactDslConversionError(
+            f"{component_id}: RingUnit.reading must be an object."
+        )
+    allowed = {"path", "unit"}
+    unknown = sorted(set(reading) - allowed)
+    if unknown:
+        names = ", ".join(unknown)
+        raise CompactDslConversionError(
+            f"{component_id}: unsupported RingUnit.reading fields: {names}."
+        )
+    path = reading.get("path")
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise CompactDslConversionError(
+            f"{component_id}: RingUnit.reading.path must be a JSON Pointer."
+        )
+    _decode_json_pointer(path)
+    unit = reading.get("unit")
+    if unit is not None and not isinstance(unit, str):
+        raise CompactDslConversionError(
+            f"{component_id}: RingUnit.reading.unit must be a string."
+        )
+
+
+def _source_value_for_validation(
+    component_type: str,
+    props: dict[str, Any],
+) -> dict[str, Any]:
+    if component_type != "RingUnit" or "reading" not in props:
+        return props
+    source_props = copy.deepcopy(props)
+    source_props.pop("reading", None)
+    return source_props
 
 
 def _validate_semantic_props(
@@ -2124,6 +2251,8 @@ def _convert_component_rows(
 ) -> list[dict[str, Any]]:
     if component.component_type == "ActionUnit":
         return _convert_action_unit(component)
+    if component.component_type == "RingUnit":
+        return _convert_ring_unit(component)
     return [
         _convert_component(
             component,
@@ -2133,14 +2262,183 @@ def _convert_component_rows(
     ]
 
 
+def _convert_ring_unit(component: ComponentRow) -> list[dict[str, Any]]:
+    state = _canonical_ring_unit_state(component.component_id, component.props["state"])
+    if state == "center-icon":
+        return _convert_ring_unit_center_icon(component)
+    if state == "center-text":
+        return _convert_ring_unit_center_text(component)
+    return _convert_ring_unit_center_icon_below_text(component)
+
+
+def _convert_ring_unit_center_icon(component: ComponentRow) -> list[dict[str, Any]]:
+    ring_id = _ring_unit_child_id(component.component_id, "ring")
+    icon_id = _ring_unit_child_id(component.component_id, "center_icon")
+    stack = _ring_unit_stack(component, [ring_id, icon_id])
+    ring = _ring_unit_progress(component, ring_id)
+    icon = _ring_unit_icon(component, icon_id)
+    return [stack, ring, icon]
+
+
+def _convert_ring_unit_center_text(component: ComponentRow) -> list[dict[str, Any]]:
+    ring_id = _ring_unit_child_id(component.component_id, "ring")
+    reading_id = _ring_unit_child_id(component.component_id, "center_reading")
+    stack = _ring_unit_stack(component, [ring_id, reading_id])
+    ring = _ring_unit_progress(component, ring_id)
+    reading = _ring_unit_reading_rows(
+        reading_id,
+        component.props["reading"],
+        component_id=component.component_id,
+    )
+    return [stack, ring, *reading]
+
+
+def _convert_ring_unit_center_icon_below_text(
+    component: ComponentRow,
+) -> list[dict[str, Any]]:
+    stack_id = _ring_unit_child_id(component.component_id, "ring_stack")
+    ring_id = _ring_unit_child_id(component.component_id, "ring")
+    icon_id = _ring_unit_child_id(component.component_id, "center_icon")
+    reading_id = _ring_unit_child_id(component.component_id, "reading")
+    root = {
+        "id": component.component_id,
+        "component": "Column",
+        "children": [stack_id, reading_id],
+        "itemMargin": 4,
+        "styles": {
+            "alignItems": "center",
+            "flexShrink": component.props.get("flexShrink", 0),
+        },
+    }
+    stack = _ring_unit_stack(
+        component,
+        [ring_id, icon_id],
+        component_id=stack_id,
+    )
+    ring = _ring_unit_progress(component, ring_id)
+    icon = _ring_unit_icon(component, icon_id)
+    reading = _ring_unit_reading_rows(
+        reading_id,
+        component.props["reading"],
+        component_id=component.component_id,
+    )
+    return [root, stack, ring, icon, *reading]
+
+
+def _ring_unit_stack(
+    component: ComponentRow,
+    children: list[str],
+    *,
+    component_id: str | None = None,
+) -> dict[str, Any]:
+    size = int(component.props["size"])
+    styles = {
+        "width": size,
+        "height": size,
+        "alignContent": "center",
+        "flexShrink": component.props.get("flexShrink", 0),
+    }
+    return {
+        "id": component_id or component.component_id,
+        "component": "Stack",
+        "children": children,
+        "styles": styles,
+    }
+
+
+def _ring_unit_progress(component: ComponentRow, ring_id: str) -> dict[str, Any]:
+    styles = _resolved_design_styles(component.component_id, _PROGRESS_DESIGNS["ring"])
+    styles["width"] = "matchParent"
+    styles["height"] = "matchParent"
+    styles["strokeWidth"] = 4 if component.props["size"] == 44 else 6
+    return {
+        "id": ring_id,
+        "component": "Progress",
+        "value": _convert_path_bindings(component.props["value"]),
+        "total": _convert_path_bindings(component.props["total"]),
+        "styles": styles,
+    }
+
+
+def _ring_unit_icon(component: ComponentRow, icon_id: str) -> dict[str, Any]:
+    icon_size = 24 if component.props["size"] >= 52 else 20
+    return {
+        "id": icon_id,
+        "component": "Image",
+        "src": component.props["centerIcon"],
+        "styles": {
+            "width": icon_size,
+            "height": icon_size,
+            "objectFit": "contain",
+            "flexShrink": 0,
+        },
+    }
+
+
+def _ring_unit_reading_rows(
+    reading_id: str,
+    reading: dict[str, Any],
+    *,
+    component_id: str,
+) -> list[dict[str, Any]]:
+    path = reading["path"]
+    unit = reading.get("unit")
+    content = _convert_path_bindings({"path": path})
+    if unit is None or unit == "":
+        return [
+            {
+                "id": reading_id,
+                "component": "Text",
+                "content": content,
+                "styles": copy.deepcopy(_RING_READING_TEXT_STYLES),
+            }
+        ]
+
+    number_id = _ring_unit_child_id(component_id, "reading_num")
+    unit_id = _ring_unit_child_id(component_id, "reading_unit")
+    return [
+        {
+            "id": reading_id,
+            "component": "Row",
+            "children": [number_id, unit_id],
+            "itemMargin": 0,
+            "styles": {
+                "alignItems": "center",
+                "justifyContent": "center",
+                "flexShrink": 0,
+            },
+        },
+        {
+            "id": number_id,
+            "component": "Text",
+            "content": content,
+            "styles": copy.deepcopy(_RING_READING_TEXT_STYLES),
+        },
+        {
+            "id": unit_id,
+            "component": "Text",
+            "content": unit,
+            "styles": copy.deepcopy(_RING_READING_TEXT_STYLES),
+        },
+    ]
+
+
+def _ring_unit_child_id(component_id: str, suffix: str) -> str:
+    return f"{component_id}_{suffix}"
+
+
 def _convert_action_unit(component: ComponentRow) -> list[dict[str, Any]]:
     state = component.props["state"]
     if state == "capsule":
-        return [_convert_action_unit_capsule(component)]
+        return _convert_action_unit_capsule(component)
     return _convert_action_unit_icon_round(component)
 
 
-def _convert_action_unit_capsule(component: ComponentRow) -> dict[str, Any]:
+def _convert_action_unit_capsule(component: ComponentRow) -> list[dict[str, Any]]:
+    icon = component.props.get("icon")
+    if isinstance(icon, str) and icon:
+        return _convert_action_unit_capsule_with_icon(component, icon)
+
     converted: dict[str, Any] = {
         "id": component.component_id,
         "component": "Button",
@@ -2154,7 +2452,94 @@ def _convert_action_unit_capsule(component: ComponentRow) -> dict[str, Any]:
     if action_ink is not None:
         styles["fontColor"] = action_ink
     converted["styles"] = styles
-    return converted
+    return [converted]
+
+
+def _convert_action_unit_capsule_with_icon(
+    component: ComponentRow,
+    icon_source: str,
+) -> list[dict[str, Any]]:
+    icon_id = f"{component.component_id}_icon"
+    text_id = f"{component.component_id}_text"
+    styles = _resolved_design_styles(component.component_id, _BUTTON_DESIGNS["capsule"])
+    text_styles = _capsule_text_styles(styles, component.props.get("actionInk"))
+    row_styles = _capsule_row_styles(styles)
+    row: dict[str, Any] = {
+        "id": component.component_id,
+        "component": "Row",
+        "children": [icon_id, text_id],
+        "itemMargin": 4,
+        "onClick": _convert_path_bindings(component.props["onClick"]),
+        "styles": row_styles,
+    }
+    icon = {
+        "id": icon_id,
+        "component": "Image",
+        "src": icon_source,
+        "styles": {
+            "width": 16,
+            "height": 16,
+            "objectFit": "contain",
+            "flexShrink": 0,
+        },
+    }
+    text = {
+        "id": text_id,
+        "component": "Text",
+        "content": component.props["label"],
+        "styles": text_styles,
+    }
+    return [row, icon, text]
+
+
+def _capsule_row_styles(styles: dict[str, Any]) -> dict[str, Any]:
+    row_style_names = {
+        "backgroundColor",
+        "borderRadius",
+        "flexShrink",
+        "height",
+        "padding",
+        "width",
+    }
+    row_styles = {
+        name: copy.deepcopy(value)
+        for name, value in styles.items()
+        if name in row_style_names
+    }
+    row_styles["justifyContent"] = "center"
+    row_styles["alignItems"] = "center"
+    return row_styles
+
+
+def _capsule_text_styles(
+    capsule_styles: dict[str, Any],
+    action_ink: Any,
+) -> dict[str, Any]:
+    text_style_names = {
+        "fontColor",
+        "fontSize",
+        "fontWeight",
+        "maxFontSize",
+        "maxLines",
+        "minFontSize",
+    }
+    text_styles = {
+        name: copy.deepcopy(value)
+        for name, value in capsule_styles.items()
+        if name in text_style_names
+    }
+    if action_ink is not None:
+        text_styles["fontColor"] = action_ink
+    text_styles.update(
+        {
+            "width": 94,
+            "height": capsule_styles.get("height", 30),
+            "textAlign": "center",
+            "textOverflow": "ellipsis",
+            "flexShrink": 0,
+        }
+    )
+    return text_styles
 
 
 def _convert_action_unit_icon_round(component: ComponentRow) -> list[dict[str, Any]]:
@@ -2203,7 +2588,7 @@ def _convert_component(
         "id": component.component_id,
         "component": output_type,
     }
-    if output_type in _CONTAINER_TYPES or component.children:
+    if output_type in _CONTAINER_TYPES:
         converted["children"] = list(component.children)
     if hide_label and output_type == "Button":
         converted["label"] = _A2UI_ICON_BUTTON_LABEL
@@ -2755,6 +3140,8 @@ def _candidate_component_asset_source(component: ComponentRow) -> str | None:
         source = component.props.get("src")
     elif component.component_type == "ActionUnit":
         source = component.props.get("icon")
+    elif component.component_type == "RingUnit":
+        source = component.props.get("centerIcon")
     else:
         return None
     return source if isinstance(source, str) and source else None
@@ -2952,6 +3339,9 @@ def _collect_binding_paths(value: Any, paths: list[str]) -> None:
         if set(value) == {"path"}:
             paths.append(value["path"])
             return
+        path = value.get("path")
+        if isinstance(path, str) and path.startswith("/"):
+            paths.append(path)
         for child_value in value.values():
             _collect_binding_paths(child_value, paths)
         return

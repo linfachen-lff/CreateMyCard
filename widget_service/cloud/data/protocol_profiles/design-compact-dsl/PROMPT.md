@@ -40,18 +40,22 @@
 - `root` 必须写浅色 `linearGradient`，不要纯白背景，不要深色背景。
 - `linearGradient` 必须从下面 8 个浅色 palette 中选一个；不要总是用浅蓝或浅紫。
 - 不要写 `constraintSize`、`minWidth`、`maxWidth`、`minHeight`、`maxHeight`。
-- 只能使用这些基础组件：`Column`、`Row`、`Stack`、`Text`、`Image`、`Progress`、`Button`、`Divider`、`Checkbox`。
+- 只能使用这些基础组件：`Column`、`Row`、`Stack`、`Text`、`Image`、`Progress`、`Button`、`Divider`、`Checkbox`；高级组件只用 `ActionUnit`、`RingUnit`。
 - 卡级 CTA 优先使用高级组件 `ActionUnit`，不要用基础 `Button` 手写按钮皮。
+- CTA 不要输出 `Button`，不要给 Button 写 `children`、`icon`、`design` 或 `action_icon`。
 - `Row`、`Column`、`Stack` 必须有 children。
 - `Text`、`Image`、`Progress`、`Divider`、`Checkbox` 不能有 children。
 - `ActionUnit` 不能有 children。
+- `RingUnit` 不能有 children；占比环只输出 `RingUnit`，不要手搓 `Stack + Progress + Image/Text` 环内部树。
 - 每个非 root 组件必须且只能被一个父组件引用。
 - children 里出现的 ID 必须有组件定义；不要输出孤儿组件。
 - Row / Column 间距只用 `itemMargin`，不要用 `space`。
 - 动态数据必须写成 `{"path":"/..."}`，path 必须来自 `dataModelSchema`。
+- 禁止猜 path；模板中的 path 只是示例，当前 schema 没有逐字符相同 path 时必须替换或删除。
 - 每个实际使用的 path 必须输出一条 data 行；未使用的 path 不要输出 data 行。
 - `Image.src` 必须逐字符复制 `assetCandidates[].src`；禁止编造 `resources/...`。
 - `Image` 禁止写 `fillColor`；所有 SVG 图标必须保持资源原有颜色，不要染成黑色或其它单色。
+- 背景只使用 root 的 `linearGradient`；不要生成背景图片、水印图片或装饰 SVG 图层。
 - `onClick` 必须逐字符复制某个 `eventCandidates` 的 `call` 和 `args`。
 
 浅色 palette：
@@ -97,8 +101,8 @@ content_area Column -> [text_block]
 
 2. visual-text-split
 root -> [title_area, content_area, action_area]
-content_area Row -> [main_icon, text_block]
-用于左图标 + 右主信息 + 底部文字按钮。
+content_area Row -> [main_icon 或 visual_ring, text_block]
+用于左图标/百分比 RingUnit + 右主信息 + 底部文字按钮。
 
 3. text-icon-action
 root -> [title_area, body_area]
@@ -151,7 +155,7 @@ title_col Column -> [title_text]
 
 - `title_text.content` 必须是静态短字符串，来自 userQuery 压缩，不要写 `{"path":...}`。
 - 标题 4 到 7 个中文最佳，最多 8 个中文。
-- 标题用 `design:"card-title"`，不要显式写 16 号字。
+- 标题用 `design:"card-title"`，不要显式写 16 号字；只有一行标题时不要加粗。
 - 标题右侧图标可选；只有 asset 中有主题匹配图标时才放。
 - 标题右侧图标用 `design:"source-icon"`，20x20。
 - 图标不要写 `fillColor`，保持 SVG 原色。
@@ -191,6 +195,7 @@ kv_row Row -> [label, value]
 主图标：
 
 - 有语义匹配 asset 时，内容区可放 `main_icon Image design:"hero-icon"`。
+- 同一主体有 0 到 100 的 number 型百分比时，优先用 `visual_ring RingUnit` 替代 `main_icon`。
 - 主读数很长时省略 `main_icon`，让文字使用更宽空间。
 - 图标不要写 `fillColor`，保持 SVG 原色。
 
@@ -201,9 +206,9 @@ kv_row Row -> [label, value]
 优先使用底部 `capsule`：
 
 - action 需要文字才能理解，例如“打车去公司”“开启省电”“一键清理”“设置闹钟”。
-- 没有语义匹配的动作图标。
 - `capsule` 必须走底栏家族：`root -> [..., action_area]`，`action_area -> [cta]`。
 - `cta` 用 `ActionUnit state:"capsule"`，必须有 `label` 和 `onClick`。
+- 如果 `assetCandidates` 有匹配 action 动词的图标，`capsule` 可额外写 `icon`，转换器会生成图标+文字整体居中。
 - capsule 文案 2 到 5 个中文，最多 6 个中文。
 
 只有同时满足下面条件，才使用右下 `icon-round`：
@@ -258,7 +263,7 @@ FreeBuds Pro 3 -> FreeBuds
 Text：
 
 ```text
-card-title: 标题，14/700
+card-title: 标题，14/500
 hero-value: 主读数，28/700
 hero-label: 主标签，12/400
 meta-text: 辅助信息，12/400
@@ -279,18 +284,30 @@ ActionUnit：
 
 ```text
 ActionUnit 是卡级 CTA 高级组件，只输出一行，不写 children。
-state:"capsule": 底部文字胶囊，必须写 label。
+state:"capsule": 底部文字胶囊，必须写 label；有匹配动作图标时可写 icon。
 state:"icon-round": 右下 30x30 纯图标按钮，必须写 icon，禁止 label。
 onClick 必须原样复制 eventCandidates 的 call + args。
 不要写 design、width、height、padding、borderRadius、backgroundColor、fontColor、fillColor。
+不要再额外输出 `action_icon` Image 行；capsule 和 icon-round 的图标都只写在 `icon` 字段里。
+capsule 带 icon 时，转换器会展开为底部通栏 Row，内部 Image + Text 整体居中。
 ```
 
-Progress：
+RingUnit：
 
 ```text
-2x2 默认不要生成 Progress。
-只有用户明确要求进度/占比且文字表达不够时，才使用 linear-progress。
-不要展开环形进度内部结构，不要生成 RingUnit。
+有 0 到 100 的 number 型百分比时，优先生成 RingUnit。
+RingUnit 只输出一行，不能写 children；转换器会展开为可渲染 A2UI 环形进度。
+RingUnit.state 只用：
+- "center-icon"：环心是图标，无环内读数；必须写 centerIcon。
+- "center-text"：环心是读数；必须写 reading，禁止 centerIcon，size 必须 52。
+- "center-icon-below-text"：环心是图标，环下有读数；必须写 centerIcon 和 reading。
+RingUnit.size 只用 44 或 52。
+RingUnit.value / total 只用 number 或 {"path":"/..."}；total 通常是 100。
+RingUnit.centerIcon 必须逐字符复制 assetCandidates[].src。
+RingUnit.reading 只允许 {"path":"/..."} 或 {"path":"/...","unit":"%"}。
+右侧 text_block 仍要展示主读数和短标签，不要只放环。
+如果百分比是 "72%" 这种 string，且没有 number 型百分比 path，不生成环。
+不要输出 Progress/Stack/Image 组合来模拟环。
 ```
 
 ## 9. 推荐骨架
@@ -314,10 +331,32 @@ Progress：
 ["primary_text","Text",{"content":"4.5GB","design":"hero-value","width":"matchParent","fontColor":"#E5000000","maxLines":1,"textOverflow":"ellipsis"}]
 ["primary_label","Text",{"content":"可用内存","design":"hero-label","width":"matchParent","fontColor":"#99000000","maxLines":1,"textOverflow":"ellipsis"}]
 ["action_area","Column",{"width":"matchParent","flexShrink":0},["cta"]]
-["cta","ActionUnit",{"state":"capsule","label":"一键清理","onClick":[{"call":"clickToDeeplink","args":{"uri":"demo://replace-with-candidate"}}],"actionInk":"font_emphasize","flexShrink":0}]
+["cta","ActionUnit",{"state":"capsule","label":"一键清理","icon":"resources/base/media/clean_fill.svg","onClick":[{"call":"clickToDeeplink","args":{"uri":"demo://replace-with-candidate"}}],"actionInk":"font_emphasize","flexShrink":0}]
 ```
 
-### 摸高模板 B：text-icon-action + 右下 icon-round
+### 摸高模板 B：百分比环 + 右主信息 + 底部 capsule
+
+用于存在 number 型百分比的卡片。左侧环只做视觉增强，右侧必须保留主读数和标签。
+
+```text
+["root","Column",{"width":160,"height":160,"padding":12,"borderRadius":20,"clip":true,"linearGradient":{"angle":145,"colors":[["#FFFFFFFF",0],["#FFF4FBFF",0.44],["#FF86C5E3",1]]},"justifyContent":"spaceBetween","itemMargin":8},["title_area","content_area","action_area"]]
+["title_area","Row",{"width":136,"height":20,"alignItems":"top","justifyContent":"spaceBetween","flexShrink":0,"itemMargin":4},["title_col","title_icon"]]
+["title_col","Column",{"width":"matchParent","layoutWeight":1,"flexShrink":1},["title_text"]]
+["title_text","Text",{"content":"雨天打车","design":"card-title","width":"matchParent","fontColor":"#E5000000","maxLines":1,"textOverflow":"ellipsis"}]
+["title_icon","Image",{"src":"resources/base/media/drop_1.svg","design":"source-icon","flexShrink":0}]
+["content_area","Row",{"width":136,"layoutWeight":1,"alignItems":"center","justifyContent":"start","itemMargin":8},["visual_ring","text_block"]]
+["visual_ring","RingUnit",{"state":"center-icon","size":44,"value":{"path":"/data/weather/daily/0/rainProbabilityPercent"},"total":100,"centerIcon":"resources/base/media/drop_1.svg","flexShrink":0}]
+["text_block","Column",{"width":"matchParent","layoutWeight":1,"flexShrink":1,"itemMargin":0,"justifyContent":"center","alignItems":"start"},["primary_text","primary_label"]]
+["primary_text","Text",{"content":{"path":"/data/weather/daily/0/rainProbabilityPercent"},"design":"hero-value","width":"matchParent","fontColor":"#E5000000","maxLines":1,"textOverflow":"ellipsis"}]
+["primary_label","Text",{"content":"降水概率","design":"hero-label","width":"matchParent","fontColor":"#99000000","maxLines":1,"textOverflow":"ellipsis"}]
+["action_area","Column",{"width":"matchParent","flexShrink":0},["cta"]]
+["cta","ActionUnit",{"state":"capsule","label":"打车去公司","icon":"resources/base/media/drop_1.svg","onClick":[{"call":"clickToDeeplink","args":{"uri":"demo://replace-with-candidate"}}],"actionInk":"font_emphasize","flexShrink":0}]
+["/data/weather/daily/0/rainProbabilityPercent",72]
+```
+
+注意：模板里的 `/data/weather/daily/0/rainProbabilityPercent` 只是示例。当前 schema 没有逐字符相同 path 时，必须换成真实 path；没有 number 型百分比 path 就不要生成 ring。若 preview 是 `"72%"` 字符串，改用普通 `main_icon + text_block`。
+
+### 摸高模板 C：text-icon-action + 右下 icon-round
 
 用于图标能表达行动的入口。圆形按钮固定在右下，内容区获得更大纵向空间。
 
@@ -337,7 +376,7 @@ Progress：
 ["cta","ActionUnit",{"state":"icon-round","icon":"resources/base/media/bolt_fill.svg","onClick":[{"call":"clickToDeeplink","args":{"uri":"demo://replace-with-candidate"}}],"actionInk":"font_emphasize","flexShrink":0}]
 ```
 
-注意：如果当前 taskspec 没有 `clean_fill.svg`、`bolt_fill.svg` 或示例事件，必须换成当前候选里的真实值，不能复制示例值。
+注意：如果当前 taskspec 没有 `clean_fill.svg`、`drop_1.svg`、`bolt_fill.svg` 或示例事件，必须换成当前候选里的真实值，不能复制示例值。
 
 ## 10. 最终自检
 
@@ -349,8 +388,10 @@ Progress：
 4. 是否仍有 `hero_area`、root 直挂 `support_text`、孤儿组件或空组件；有则重写。
 5. 是否存在换行、过长英文、长标题或长说明；有则缩短、降字号或删除辅助信息。
 6. 是否把长动态值放进了 28 号主读数；有则改成短静态主文案或放到小字区域。
-7. 是否所有 Image.src 都来自候选资源，且 Image 没有写 fillColor。
-8. 是否 `ActionUnit` 最多一个，且没有 children。
-9. 若使用 icon-round，`ActionUnit` 是否无 label、有 icon、有 onClick。
-10. 是否所有 path 都来自 dataModelSchema，且用到的 path 都有 data 行。
-11. 围栏外是否没有任何文字。
+7. 若生成 RingUnit，是否只用了 number 型百分比 path，且仍保留右侧主读数和标签。
+8. 是否所有 Image.src 和 ActionUnit.icon 都来自候选资源，且 Image 没有写 fillColor。
+9. 是否 `ActionUnit` 最多一个，且没有 children。
+10. 若使用 capsule，是否有 label 和 onClick；有动作图标时 icon 是否只写在 ActionUnit.icon。
+11. 若使用 icon-round，`ActionUnit` 是否无 label、有 icon、有 onClick。
+12. 是否所有 path 都来自 dataModelSchema，且用到的 path 都有 data 行。
+13. 围栏外是否没有任何文字。
