@@ -148,7 +148,7 @@ def _compact_payload(interaction_id: str, user_query: str = "生成静态卡片"
 def _patch_lookup(monkeypatch, decision: SearchDecision) -> None:
     """把 _search_adapter.lookup 替换为返回固定 decision 的异步桩。"""
 
-    async def fake_lookup(request, *, service=None, enabled=True):
+    async def fake_lookup(request, *, service=None, enabled=True, input_data=None):
         if not enabled:
             return SearchDecision(outcome="disabled")
         return decision
@@ -312,7 +312,7 @@ def test_compact_route_search_disabled_by_default(monkeypatch):
     monkeypatch.setattr(get_settings(), "enable_a2ui_model_mock", True)
     seen_enabled = []
 
-    async def fake_lookup(request, *, service=None, enabled=True):
+    async def fake_lookup(request, *, service=None, enabled=True, input_data=None):
         seen_enabled.append(enabled)
         if not enabled:
             return SearchDecision(outcome="disabled")
@@ -332,6 +332,34 @@ def test_compact_route_search_disabled_by_default(monkeypatch):
     assert seen_enabled == [False]
 
 
+def test_compact_route_passes_deflated_data_model_schema(monkeypatch):
+    """生成服务把 task_spec.dataModelSchema 降维后传给 lookup 的 input_data。"""
+    print("MOCK DATA: 捕获 lookup 收到的 input_data")
+    monkeypatch.setattr(get_settings(), "enable_search_cache", True)
+    monkeypatch.setattr(get_settings(), "enable_a2ui_model_mock", True)
+    captured: dict = {}
+
+    async def fake_lookup(request, *, service=None, enabled=True, input_data=None):
+        captured["input_data"] = input_data
+        if not enabled:
+            return SearchDecision(outcome="disabled")
+        return SearchDecision(outcome="miss", miss_reason="no_hit")
+
+    monkeypatch.setattr(
+        widget_generation_service._search_adapter,
+        "lookup",
+        fake_lookup,
+    )
+    _capture_artifacts(monkeypatch)
+    _patch_model(monkeypatch)
+
+    message = _run_compact_route("search-schema", _compact_payload("search-schema"))
+
+    assert message["data"]["status"] == "success"
+    # 空候选绑定 → dataModelSchema 为 {"data":{}}，降维后不变
+    assert captured["input_data"] == {"data": {}}
+
+
 def test_a2ui_form_route_ignores_search(monkeypatch):
     """非 compact 路由（a2ui-form）即使开关打开也不检索。"""
     print("MOCK DATA: a2ui-form 路由（lookup 不应触发）")
@@ -339,7 +367,7 @@ def test_a2ui_form_route_ignores_search(monkeypatch):
     monkeypatch.setattr(get_settings(), "enable_a2ui_model_mock", True)
     seen_enabled = []
 
-    async def fake_lookup(request, *, service=None, enabled=True):
+    async def fake_lookup(request, *, service=None, enabled=True, input_data=None):
         seen_enabled.append(enabled)
         if not enabled:
             return SearchDecision(outcome="disabled")

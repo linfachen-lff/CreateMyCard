@@ -31,6 +31,7 @@ from custom.model_runtime import ModelExecutionRuntime
 from models.artifact import ArtifactMeta, GenerationPlan, WidgetArtifact
 from models.generation import DEFAULT_WIDGET_SIZE, EventAction, ModelRequestContext, WidgetSize
 from search_integration.adapter import SearchIntegrationAdapter
+from search_integration.deflate import deflate_data_model_schema
 from services.artifact_store import ArtifactStore
 from services.capability_registry import CapabilityRegistry
 from services.card_spec_builder import CardSpecBuilder
@@ -562,6 +563,7 @@ class WidgetGenerationService:
                 and policy.processor_kind == DslProcessorKind.DESIGN_COMPACT
                 and generation_mode != "edit"
             ),
+            input_data=deflate_data_model_schema(task_spec.dataModelSchema),
         )
         use_cached_dsl = search_decision.outcome == "structure_match" and bool(
             search_decision.rendered_jsonl

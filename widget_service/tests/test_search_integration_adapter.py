@@ -162,3 +162,22 @@ async def test_custom_input_data_mapper_is_used(monkeypatch):
     )
     await adapter.lookup(_make_request(), enabled=True)
     assert captured["input_data"] == {"custom": 1}
+
+
+@pytest.mark.asyncio
+async def test_lookup_uses_explicit_input_data(monkeypatch):
+    """显式传入的 input_data（如降维后的 dataModelSchema）直接用于检索。"""
+    captured: dict = {}
+
+    async def fake_search(request, *, service=None):
+        captured["input_data"] = request.input_data
+        return vendored_loader.api_schema.MissResult(miss_reason="no_hit")
+
+    monkeypatch.setattr(vendored_loader, "search_template", fake_search)
+    explicit = {"data": {"weather": {"current": {"temperatureText": "26℃"}}}}
+    await SearchIntegrationAdapter().lookup(
+        _make_request(),
+        enabled=True,
+        input_data=explicit,
+    )
+    assert captured["input_data"] == explicit

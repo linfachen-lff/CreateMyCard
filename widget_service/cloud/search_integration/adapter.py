@@ -74,13 +74,24 @@ class SearchIntegrationAdapter:
     def __init__(self, input_data_mapper: InputDataMapper | None = None) -> None:
         self.input_data_mapper = input_data_mapper or default_input_data_mapper
 
-    def build_search_request(self, request: GenerateWidgetCardRequest) -> Any | None:
-        """构建 vendored SearchRequest；vendored 不可用时返回 None。"""
+    def build_search_request(
+        self,
+        request: GenerateWidgetCardRequest,
+        input_data: dict[str, Any] | None = None,
+    ) -> Any | None:
+        """构建 vendored SearchRequest；vendored 不可用时返回 None。
+
+        input_data 显式传入时使用它（如降维后的 dataModelSchema）；
+        否则回退到可配置的 input_data_mapper。
+        """
         if not vendored_loader.search_available():
             return None
+        effective_input = (
+            input_data if input_data is not None else self.input_data_mapper(request)
+        )
         return vendored_loader.api_schema.SearchRequest(
             query=request.userQuery or None,
-            input_data=self.input_data_mapper(request),
+            input_data=effective_input,
         )
 
     async def lookup(
@@ -89,12 +100,15 @@ class SearchIntegrationAdapter:
         *,
         service: Any | None = None,
         enabled: bool = True,
+        input_data: dict[str, Any] | None = None,
     ) -> SearchDecision:
         """执行检索并返回 SearchDecision。
 
         - enabled=False → disabled；
         - vendored 不可用 → miss(vendored_unavailable)；
         - 检索异常 → miss(search_error)；
+        - input_data：显式传入的检索载荷（推荐降维后的 dataModelSchema）；
+          缺省时回退到 input_data_mapper。
         - 其他按 outcome 投影。
         """
         if not enabled:
@@ -107,7 +121,7 @@ class SearchIntegrationAdapter:
             return SearchDecision(outcome="miss", miss_reason="vendored_unavailable")
         if service is None:
             self._configure_default_db_path()
-        search_request = self.build_search_request(request)
+        search_request = self.build_search_request(request, input_data=input_data)
         if search_request is None:
             return SearchDecision(outcome="miss", miss_reason="vendored_unavailable")
         try:
