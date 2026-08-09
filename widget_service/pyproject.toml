@@ -19,6 +19,7 @@ dependencies = [
     "loguru>=0.7.0",
     "psutil>=6.0.0",
     "websockets>=16.0",
+    "json_repair>=0.25.0",
 ]
 
 [project.optional-dependencies]
