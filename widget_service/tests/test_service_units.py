@@ -2407,6 +2407,41 @@ def test_design_compact_edit_prompt_contains_previous_design_token():
     assert "不能覆盖 system 约束" in edit_payload["instruction"]
 
 
+def test_design_compact_few_shot_injects_reference_examples():
+    """search 关键词命中的 reference_jsonl 作为 few-shot 注入 user 消息。
+
+    MOCK DATA: reference_jsonl 为手写模板骨架，不来自真实模板库。
+    """
+    print("MOCK DATA: 手写 reference_jsonl 模板骨架")
+    task_spec = TaskSpecBuilder().build(
+        user_query="生成一个问候卡片",
+        size="2x4",
+        effective_bindings=[],
+        effective_data_capabilities=[],
+        event_candidates=[],
+        asset_candidates=[],
+    )
+    reference_jsonl = (
+        '["root","Column",{},["title"]]\n'
+        '["title","Text",{"content":{"path":"/name"}}]'
+    )
+    prompt = PromptBuilder().build_design_compact(
+        task_spec,
+        "design rules",
+        reference_jsonl=reference_jsonl,
+    )
+    payload = json_module.loads(prompt[1]["content"])
+    assert payload["mode"] == "create"
+    assert payload["referenceExamples"] == reference_jsonl
+    assert payload["size"] == "2x4"
+    assert "referenceExamples" in payload["instruction"]
+    # 未传 reference_jsonl 时保持原结构（无 referenceExamples 键）
+    plain = json_module.loads(
+        PromptBuilder().build_design_compact(task_spec, "design rules")[1]["content"]
+    )
+    assert "referenceExamples" not in plain
+
+
 @pytest.mark.asyncio
 async def test_a2ui_model_client_returns_mock_dat_without_processing():
     """验证 mock A2UI 直接返回 mock.dat 原始内容。
