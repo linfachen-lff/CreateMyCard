@@ -98,13 +98,43 @@ few_shot = search_decision.few_shot
 | `WIDGET_SERVICE_ENABLE_SEARCH_CACHE` | `false` | 总开关 |
 | `WIDGET_SERVICE_SEARCH_DB_PATH` | 空 | 运行时数据库路径；为空用 vendored 默认（`SEARCH_DB_PATH` 优先） |
 
+## 建库与真实数据（步骤 7）
+
+用 `cloud/search_integration/build_db.py` 从 `subagent_genui/taskspec/md` 的 20 个
+`q*_artifact.md` 构建模板库：
+
+```bash
+cd widget_service
+PYTHONPATH=cloud py -3.12 -m cloud.search_integration.build_db \
+  --source D:/Program/work/subagent_genui/taskspec/md \
+  --db vendor_search/search/data/templates.sqlite3 --replace
+```
+
+- 转换逻辑：`taskspec.dataModelSchema` 经 `deflate.py` 降维为 sampleValue 实例 → `input_json`；
+  `designcompactdsl` 去掉 data 行 → `reference_jsonl`；`structure_hash` 由 `input_json` 计算；
+  description/tags 从 cardspec.description + capabilityId + userQuery 派生。
+- 结果：**20/20 张模板入库**。3 张（q04/q09/q15）`Progress.value` 绑定字符串路径，bind 校验失败，
+  只能走 keyword_match（structure_match 会回退模型）。
+- 运行库在 `vendor_search/search/data/templates.sqlite3`（gitignore，不提交）。
+
+真实检索三通路已验证：q01 结构命中（structure_match）、「电量 卡片」关键词命中 q09、
+无关 query → miss。
+
+## 尺寸敏感限制（重要）
+
+缓存命中的模板是**按尺寸建库**的。`DesignCompactProcessor` 会校验 root 尺寸与请求 size
+一致（如 2x4 需 320x160）。因此 2x4 请求不会命中 2x2 模板——structure_match 命中后转换失败
+→ 走无 few-shot 模型回退，产物仍正确但丢失缓存收益。这是当前设计（search 不感知尺寸）的固有
+限制；后续 search 更新时可考虑把 size 纳入模板键。
+
 ## 测试（全部 MOCK DATA）
 
 | 文件 | 覆盖 |
 | --- | --- |
-| `tests/test_search_vendored_loader.py` | vendored 导入 + 真实检索三条通路（内存 SQLite）、ambiguous、store_unavailable 降级 |
-| `tests/test_search_integration_adapter.py` | adapter 映射/开关/三分支/异常降级/自定义 mapper |
-| `tests/test_search_cache_integration.py` | route 级：短路、回退、few-shot 注入、miss、默认关闭、a2ui-form 忽略 |
+| `tests/test_search_vendored_loader.py` | vendored 导入 + 真实检索三条通路（内存 SQLite）、ambiguous、store_unavailable 降级、Button+Image 补丁 |
+| `tests/test_search_integration_adapter.py` | adapter 映射/开关/三分支/异常降级/自定义 mapper/显式 input_data |
+| `tests/test_search_build_db.py` | deflate/parse/build_record/临时库可检索（内嵌夹具） |
+| `tests/test_search_cache_integration.py` | route 级：短路、回退、few-shot 注入、miss、默认关闭、a2ui-form 忽略、**真实全通路 structure_match（临时库）** |
 
 ## 已知风险与限制
 

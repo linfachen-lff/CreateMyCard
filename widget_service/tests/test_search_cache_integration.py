@@ -36,6 +36,7 @@ if str(CLOUD_ROOT) not in sys.path:
     sys.path.insert(0, str(CLOUD_ROOT))
 
 app = importlib.import_module("start_websocket_server").app
+vendored_loader = importlib.import_module("cloud.search_integration.vendored_loader")
 A2UIModelClient = importlib.import_module("custom.a2ui_model_client").A2UIModelClient
 ArtifactSaveResult = importlib.import_module("models.service").ArtifactSaveResult
 ArtifactStore = importlib.import_module("services.artifact_store").ArtifactStore
@@ -130,11 +131,15 @@ def _compact_dsl(title: str = "Cached Card") -> str:
     )
 
 
-def _compact_payload(interaction_id: str, user_query: str = "生成静态卡片") -> dict:
+def _compact_payload(
+    interaction_id: str,
+    user_query: str = "生成静态卡片",
+    size: str = "2x4",
+) -> dict:
     return _tool_payload(
         {
             "userQuery": user_query,
-            "size": "2x4",
+            "size": size,
             "title": "静态卡片",
             "description": "Search Cache 转换",
             "candidateDataBindings": [],
@@ -330,6 +335,96 @@ def test_compact_route_search_disabled_by_default(monkeypatch):
 
     assert message["data"]["status"] == "success"
     assert seen_enabled == [False]
+
+
+# 全通路测试用最小模板（仅 Text 绑定，规避转换器对 Button 子节点的行为不确定性）
+_FULL_PIPELINE_MD = """```cardspec
+{
+  "title": "上海天气",
+  "description": "上海今日天气小卡片",
+  "suggestSize": "2x2",
+  "dataBindings": []
+}
+```
+```taskspec
+{
+  "userQuery": "创建上海今日天气小卡片",
+  "size": "2x2",
+  "eventCandidates": [],
+  "dataModelSchema": {
+    "data": {
+      "weather": {
+        "current": {
+          "temperatureText": {"type": "string", "description": "温度", "sampleValue": "26℃"}
+        }
+      }
+    }
+  },
+  "assetCandidates": []
+}
+```
+```generationplan
+{
+  "candidateDataBindings": [
+    {"capabilityId": "ViewWeather", "arguments": {}, "writeResultTo": "/data/weather",
+     "candidateOutputFields": ["/current/temperatureText"]}
+  ],
+  "candidateEventCandidates": [],
+  "candidateAssetIds": []
+}
+```
+```designcompactdsl
+["root","Column",{"width":160,"height":160},["title"]]
+["title","Text",{"content":{"path":"/data/weather/current/temperatureText"}}]
+["/data/weather/current/temperatureText","26℃"]
+```
+"""
+
+
+def test_compact_route_full_pipeline_structure_match(monkeypatch, tmp_path):
+    """真实 adapter + 真实 search 模块 + 临时库：structure_match 全通路短路。
+
+    MOCK DATA: 用内嵌最小模板构建临时 SQLite 库，不依赖真实 subagent_genui 数据。
+    """
+    print("MOCK DATA: 内嵌最小模板构建临时库，全通路验证")
+    from cloud.search_integration.build_db import build_template_record, parse_artifact_md
+
+    fixture = tmp_path / "q01_artifact.md"
+    fixture.write_text(_FULL_PIPELINE_MD, encoding="utf-8")
+    db_path = tmp_path / "templates.sqlite3"
+    dao = vendored_loader.search.SQLiteTemplateDAO(str(db_path))
+    dao.initialize()
+    dao.upsert(build_template_record(parse_artifact_md(fixture), template_id="q01"))
+    monkeypatch.setenv("SEARCH_DB_PATH", str(db_path))
+    vendored_loader.search.get_default_search_service.cache_clear()
+
+    monkeypatch.setattr(get_settings(), "enable_search_cache", True)
+    monkeypatch.setattr(get_settings(), "enable_a2ui_model_mock", True)
+    saved, design_tokens = _capture_artifacts(monkeypatch)
+    # 短路时模型不被调用：被调则抛错
+    _patch_model(monkeypatch, raise_on_call=True)
+
+    payload = _compact_payload(
+        "search-full",
+        user_query="生成上海天气卡片",
+        size="2x2",
+    )
+    payload["content"]["candidateDataBindings"] = [
+        {
+            "capabilityId": "ViewWeather",
+            "arguments": {"districtName": "上海"},
+            "writeResultTo": "/data/weather",
+            "candidateOutputFields": ["/current/temperatureText"],
+        }
+    ]
+    message = _run_compact_route("search-full", payload)
+
+    assert message["data"]["status"] == "success"
+    assert len(saved) == 1
+    rows = [json.loads(line) for line in saved[0]["genui"].splitlines()]
+    assert "createSurface" in rows[0]
+    # 缓存命中：design_token 即为模板 rendered_jsonl（模型零调用）
+    assert design_tokens[0].startswith('["root","Column"')
 
 
 def test_compact_route_passes_deflated_data_model_schema(monkeypatch):

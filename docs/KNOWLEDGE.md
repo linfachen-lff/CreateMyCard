@@ -44,9 +44,23 @@
   `widget_service/docs/search_cache_integration.md`、`docs/CODEBASE_INDEX.md` 3.5 节。
 - 测试：`tests/test_search_vendored_loader.py`（真实检索三通路）、
   `tests/test_search_integration_adapter.py`（adapter 单元）、
-  `tests/test_search_cache_integration.py`（route 级 6 用例），全部 MOCK DATA。
-- 待办（步骤 7）：用户提供真实模板数据后用 vendored `manage.py` 建库，
-  并校准 adapter 的 `input_data_mapper` 到真实数据格式。
+  `tests/test_search_cache_integration.py`（route 级，含真实全通路）、
+  `tests/test_search_build_db.py`（建库脚本），全部 MOCK DATA。
+- 步骤 7 完成：20/20 模板入库（`vendor_search/search/data/templates.sqlite3`），
+  q04/q09/q15 因 Progress 绑定字符串只能走 keyword_match；
+  运行时 input_data 已改为降维后的 `task_spec.dataModelSchema`（原 `{"dataBindings":...}` 映射已弃用）。
+- 全通路已验证（route 级临时库 + 真实 search 模块 + 真实 TaskSpecBuilder）：
+  structure_match 命中 → 短路 → 转换 → artifact 保存，模型零调用。
+- **尺寸敏感限制**：模板按尺寸建库，转换器校验 root 尺寸与请求 size 一致；
+  2x4 请求不会命中 2x2 模板（命中后转换失败 → 无 few-shot 回退，产物仍正确但丢缓存收益）。
+  后续 search 更新可考虑把 size 纳入模板键。
+
+## 第 7 步关键决策（与用户对齐）
+
+- input_data 形状：**降维为 sampleValue 实例**（structure_match 才能真正绑定短路）。
+- Button+icon 被 search 校验拒绝 → **打记录补丁**（vendored validation.py 放行 Button+恰好一个
+  Image 子节点，镜像转换器 `_validate_button_image_children`；VENDORED.md 记录，重拷后重应用）。
+- description/tags：从产物派生（cardspec.description + capabilityId + userQuery 分词）。
 
 ## search 模块（vendored）要点（2026-08-09）
 
