@@ -112,20 +112,24 @@ PYTHONPATH=cloud py -3.12 -m cloud.search_integration.build_db \
 
 - 转换逻辑：`taskspec.dataModelSchema` 经 `deflate.py` 降维为 sampleValue 实例 → `input_json`；
   `designcompactdsl` 去掉 data 行 → `reference_jsonl`；`structure_hash` 由 `input_json` 计算；
-  description/tags 从 cardspec.description + capabilityId + userQuery 派生。
-- 结果：**20/20 张模板入库**。3 张（q04/q09/q15）`Progress.value` 绑定字符串路径，bind 校验失败，
-  只能走 keyword_match（structure_match 会回退模型）。
+  description/tags 从 cardspec.description + capabilityId + userQuery 派生；
+  `size` 取 cardspec.suggestSize。
+- 结果：**20/20 张模板入库**（当前全部 2x2）。3 张（q04/q09/q15）`Progress.value` 绑定字符串路径，
+  bind 校验失败，只能走 keyword_match（structure_match 会回退模型）。
 - 运行库在 `vendor_search/search/data/templates.sqlite3`（gitignore，不提交）。
 
-真实检索三通路已验证：q01 结构命中（structure_match）、「电量 卡片」关键词命中 q09、
-无关 query → miss。
+真实检索验证：q01 结构命中（structure_match）；2x4 请求因尺寸过滤掉 2x2 模板 →
+走 description 兜底 query → keyword_match；无关 query → miss。
 
-## 尺寸敏感限制（重要）
+## 尺寸匹配与 description 兜底（2026-08-09）
 
-缓存命中的模板是**按尺寸建库**的。`DesignCompactProcessor` 会校验 root 尺寸与请求 size
-一致（如 2x4 需 320x160）。因此 2x4 请求不会命中 2x2 模板——structure_match 命中后转换失败
-→ 走无 few-shot 模型回退，产物仍正确但丢失缓存收益。这是当前设计（search 不感知尺寸）的固有
-限制；后续 search 更新时可考虑把 size 纳入模板键。
+- **尺寸纳入数据库**（记录补丁 P2）：`TemplateRecord.size` / `SearchRequest.size` /
+  `templates` 表 `size` 列；`SearchService` 结构命中后按请求尺寸过滤：
+  0 个 → 走关键词回退，1 个 → structure_match，多个 → ambiguous_structure。
+  解决「2x4 请求命中 2x2 模板转换失败回退」的尺寸敏感问题。
+- **description 兜底 query**：structure 未命中时，关键词 query =
+  `userQuery + dataModelSchema 叶子 description`（如 "生成上海天气卡片 温度文本 体感 湿度…"），
+  让数据语义相近的模板即使结构不一致也能被关键词召回。
 
 ## 测试（全部 MOCK DATA）
 

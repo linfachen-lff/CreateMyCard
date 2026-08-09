@@ -51,9 +51,12 @@
   运行时 input_data 已改为降维后的 `task_spec.dataModelSchema`（原 `{"dataBindings":...}` 映射已弃用）。
 - 全通路已验证（route 级临时库 + 真实 search 模块 + 真实 TaskSpecBuilder）：
   structure_match 命中 → 短路 → 转换 → artifact 保存，模型零调用。
-- **尺寸敏感限制**：模板按尺寸建库，转换器校验 root 尺寸与请求 size 一致；
-  2x4 请求不会命中 2x2 模板（命中后转换失败 → 无 few-shot 回退，产物仍正确但丢缓存收益）。
-  后续 search 更新可考虑把 size 纳入模板键。
+- **尺寸敏感限制（已解决）**：用户反馈后把 size 纳入搜索库（记录补丁 P2）——
+  `TemplateRecord.size` / `SearchRequest.size` / DB `size` 列，`SearchService` 结构命中后按请求
+  尺寸过滤（0→关键词回退，1→命中，>1→ambiguous）。2x4 请求不再命中 2x2 模板。
+- **description 兜底 query（用户反馈）**：structure 未命中时，关键词 query =
+  `userQuery + dataModelSchema 叶子 description`，让结构不一致但语义相近的模板也能被召回。
+  真实库验证：2x4 请求（全部模板 2x2 被尺寸滤掉）→ 走 description 兜底 → keyword_match。
 
 ## 第 7 步关键决策（与用户对齐）
 
