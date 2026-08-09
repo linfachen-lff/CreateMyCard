@@ -226,6 +226,55 @@ async def test_button_image_child_roundtrip(search_api):
 
 
 @pytest.mark.asyncio
+async def test_size_filters_structure_matches(search_api):
+    """同结构多尺寸模板按请求尺寸过滤；尺寸不符走 miss，相符命中。"""
+    print("MOCK DATA: 同结构两个尺寸的模板")
+    dao = search_api.SQLiteTemplateDAO(":memory:")
+    dao.initialize()
+    input_data = {"name": "x", "age": 1}
+    reference = (
+        '["root","Column",{"width":160,"height":160},["title"]]\n'
+        '["title","Text",{"content":{"path":"/name"}}]'
+    )
+    signature = search_api.compute_shape_signature(input_data)
+    base = dict(
+        description="问候卡片",
+        tags=("问候",),
+        reference_jsonl=reference,
+        input_json=json.dumps(input_data, ensure_ascii=False),
+        structure_hash=signature.signature,
+        signature_version=signature.version,
+    )
+    dao.upsert(search_api.TemplateRecord(template_id="t-2x2", size="2x2", **base))
+    dao.upsert(search_api.TemplateRecord(template_id="t-2x4", size="2x4", **base))
+    service = search_api.SearchService(dao)
+
+    hit = await search_api.search_template(
+        search_api.SearchRequest(
+            query="x", input_data={"name": "y", "age": 2}, size="2x4"
+        ),
+        service=service,
+    )
+    assert hit.outcome == "structure_match"
+    assert hit.template_id == "t-2x4"
+
+    miss = await search_api.search_template(
+        search_api.SearchRequest(
+            query="x", input_data={"name": "y", "age": 2}, size="2x3"
+        ),
+        service=service,
+    )
+    assert miss.outcome != "structure_match"
+
+    ambiguous = await search_api.search_template(
+        search_api.SearchRequest(query="x", input_data={"name": "y", "age": 2}),
+        service=service,
+    )
+    assert ambiguous.outcome == "miss"
+    assert ambiguous.miss_reason == "ambiguous_structure"
+
+
+@pytest.mark.asyncio
 async def test_search_db_path_env_respected(search_api, monkeypatch, tmp_path):
     """SEARCH_DB_PATH 环境变量决定默认服务使用哪个数据库。"""
     db_path = tmp_path / "custom" / "templates.sqlite3"

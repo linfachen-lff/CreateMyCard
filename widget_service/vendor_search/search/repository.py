@@ -32,6 +32,8 @@ class TemplateRecord:
     input_json: str
     structure_hash: str
     signature_version: int = SIGNATURE_VERSION
+    # LOCAL PATCH: 卡片尺寸（如 "2x2"），structure 匹配时按尺寸过滤（见 VENDORED.md P2）
+    size: str | None = None
 
 
 @dataclass(frozen=True)
@@ -137,7 +139,8 @@ class SQLiteTemplateDAO:
                     input_json TEXT NOT NULL,
                     structure_hash TEXT NOT NULL,
                     signature_version INTEGER NOT NULL,
-                    indexed_text TEXT NOT NULL
+                    indexed_text TEXT NOT NULL,
+                    size TEXT NOT NULL DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS templates_structure_signature
                     ON templates(structure_hash, signature_version);
@@ -187,8 +190,9 @@ class SQLiteTemplateDAO:
             """
                     INSERT INTO templates(
                         template_id, description, tags_json, reference_jsonl,
-                        input_json, structure_hash, signature_version, indexed_text
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        input_json, structure_hash, signature_version, indexed_text,
+                        size
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(template_id) DO UPDATE SET
                         description=excluded.description,
                         tags_json=excluded.tags_json,
@@ -196,7 +200,8 @@ class SQLiteTemplateDAO:
                         input_json=excluded.input_json,
                         structure_hash=excluded.structure_hash,
                         signature_version=excluded.signature_version,
-                        indexed_text=excluded.indexed_text
+                        indexed_text=excluded.indexed_text,
+                        size=excluded.size
                     """,
             (
                 record.template_id,
@@ -207,6 +212,7 @@ class SQLiteTemplateDAO:
                 record.structure_hash,
                 record.signature_version,
                 indexed_text,
+                record.size or "",
             ),
         )
         connection.execute(
@@ -343,6 +349,7 @@ class SQLiteTemplateDAO:
             input_json=str(row["input_json"]),
             structure_hash=str(row["structure_hash"]),
             signature_version=int(row["signature_version"]),
+            size=str(row["size"]) if row["size"] else None,
         )
 
 

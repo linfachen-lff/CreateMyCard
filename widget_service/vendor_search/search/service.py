@@ -88,6 +88,9 @@ class SearchService:
                     diagnostics=diagnostics,
                     started=started,
                 )
+            # LOCAL PATCH: 同结构多尺寸模板按请求尺寸过滤（见 VENDORED.md P2）
+            if normalized.size:
+                matches = [match for match in matches if match.size == normalized.size]
             if len(matches) > 1:
                 diagnostics["candidate_count"] = len(matches)
                 diagnostics["error_category"] = "ambiguous_structure"

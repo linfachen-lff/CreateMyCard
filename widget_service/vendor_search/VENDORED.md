@@ -38,6 +38,19 @@ search 模块更新后，重新执行上面的拷贝命令覆盖本目录，并�
      类型为 `Image`。
 - 校验状态：`tests/test_search_vendored_loader.py::test_button_image_child_roundtrip` 通过。
 
+### P2：卡片尺寸纳入匹配（2026-08-09）
+
+- 文件：`api_schema.py`、`search/repository.py`、`search/service.py`
+- 原因：CreateMyCard 模板按尺寸建库，转换器校验 root 尺寸与请求 size 一致。若不按尺寸过滤，
+  同数据结构的 2x2 模板会命中 2x4 请求，转换失败回退丢缓存收益。
+- 修改：
+  1. `api_schema.py`：`SearchRequest` 加 `size: str | None`（`normalized` 透传）。
+  2. `search/repository.py`：`TemplateRecord` 加 `size`；`templates` 表加 `size TEXT NOT NULL DEFAULT ''`；
+     `_upsert_on_connection` / `_record_from_row` 读写 size。
+  3. `search/service.py`：structure 命中后 `if normalized.size: matches = [m for m in matches if m.size == normalized.size]`
+     （过滤后 0 → 走关键词回退；1 → structure_match；>1 → ambiguous_structure）。
+- 校验状态：`tests/test_search_vendored_loader.py::test_size_filters_structure_matches` 通过。
+
 ## 导入方式
 
 本目录无 `__init__.py`，不是 Python 包。`cloud/search_integration/vendored_loader.py`

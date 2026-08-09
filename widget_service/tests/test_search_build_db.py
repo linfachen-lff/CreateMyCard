@@ -132,6 +132,7 @@ def test_build_template_record_deflates_and_validates(tmp_path):
     parsed = parse_artifact_md(_write_sample(tmp_path))
     record = build_template_record(parsed, template_id="q01")
     assert record.template_id == "q01"
+    assert record.size == "2x2"
     input_payload = json.loads(record.input_json)
     assert input_payload["data"]["weather"]["current"]["temperatureText"] == "26℃"
     # reference 骨架不含 data 行

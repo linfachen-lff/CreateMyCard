@@ -112,6 +112,7 @@ def build_template_record(parsed: dict, template_id: str) -> Any:
     validate_template(reference_jsonl, mode="reference")
     signature = search.compute_shape_signature(input_payload)
     description, tags = derive_metadata(cardspec, taskspec, generationplan)
+    size = cardspec.get("suggestSize") or None
     return search.TemplateRecord(
         template_id=template_id,
         description=description,
@@ -120,6 +121,7 @@ def build_template_record(parsed: dict, template_id: str) -> Any:
         input_json=json.dumps(input_payload, ensure_ascii=False),
         structure_hash=signature.signature,
         signature_version=signature.version,
+        size=size if isinstance(size, str) else None,
     )
 
 

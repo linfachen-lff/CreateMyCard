@@ -331,6 +331,8 @@ class SearchRequest:
 
     query: str | None = None
     input_data: JSONObject | None = None
+    # LOCAL PATCH: 卡片尺寸（如 "2x2"），structure 命中后按尺寸过滤（见 VENDORED.md P2）
+    size: str | None = None
 
     def __post_init__(self) -> None:
         if self.input_data is not None:
@@ -338,7 +340,9 @@ class SearchRequest:
 
     def normalized(self) -> SearchRequest:
         query = self.query.strip() if self.query is not None else None
-        return SearchRequest(query=query or None, input_data=self.input_data)
+        return SearchRequest(
+            query=query or None, input_data=self.input_data, size=self.size
+        )
 
 
 @dataclass(frozen=True)
