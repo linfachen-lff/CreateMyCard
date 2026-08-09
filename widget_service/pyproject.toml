@@ -20,6 +20,7 @@ dependencies = [
     "psutil>=6.0.0",
     "websockets>=16.0",
     "json_repair>=0.25.0",
+    "jieba>=0.42.1",
 ]
 
 [project.optional-dependencies]
