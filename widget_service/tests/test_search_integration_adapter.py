@@ -181,3 +181,44 @@ async def test_lookup_uses_explicit_input_data(monkeypatch):
         input_data=explicit,
     )
     assert captured["input_data"] == explicit
+
+
+@pytest.mark.asyncio
+async def test_lookup_builds_query_from_schema_descriptions(monkeypatch):
+    """structure 兜底：query = userQuery + schema 叶子 description；size 透传。"""
+    captured: dict = {}
+
+    async def fake_search(request, *, service=None):
+        captured["query"] = request.query
+        captured["size"] = request.size
+        return vendored_loader.api_schema.MissResult(miss_reason="no_hit")
+
+    monkeypatch.setattr(vendored_loader, "search_template", fake_search)
+    schema = {
+        "data": {
+            "weather": {
+                "current": {
+                    "temperatureText": {
+                        "type": "string",
+                        "description": "温度文本",
+                        "sampleValue": "26℃",
+                    },
+                    "feelsLikeC": {
+                        "type": "number",
+                        "description": "体感温度",
+                        "sampleValue": 27,
+                    },
+                }
+            }
+        }
+    }
+    await SearchIntegrationAdapter().lookup(
+        _make_request(user_query="生成天气卡片"),
+        enabled=True,
+        data_model_schema=schema,
+        size="2x2",
+    )
+    assert "生成天气卡片" in captured["query"]
+    assert "温度文本" in captured["query"]
+    assert "体感温度" in captured["query"]
+    assert captured["size"] == "2x2"

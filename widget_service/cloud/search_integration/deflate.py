@@ -26,3 +26,24 @@ def deflate_data_model_schema(schema: Any) -> Any:
     if isinstance(schema, list):
         return [deflate_data_model_schema(item) for item in schema]
     return schema
+
+
+def collect_schema_descriptions(schema: Any) -> list[str]:
+    """收集 dataModelSchema 所有叶子的 description 文本（关键词兜底 query 用）。
+
+    叶子是 ``{type, description, sampleValue}``；结构节点不参与。
+    """
+    if isinstance(schema, dict):
+        if "type" in schema and "description" in schema:
+            description = schema.get("description")
+            return [str(description)] if description else []
+        collected: list[str] = []
+        for value in schema.values():
+            collected.extend(collect_schema_descriptions(value))
+        return collected
+    if isinstance(schema, list):
+        collected = []
+        for item in schema:
+            collected.extend(collect_schema_descriptions(item))
+        return collected
+    return []

@@ -17,6 +17,7 @@ from typing import Any, Literal
 from api.schemas import GenerateWidgetCardRequest
 
 from . import vendored_loader
+from .deflate import collect_schema_descriptions, deflate_data_model_schema
 
 logger = logging.getLogger(__name__)
 
@@ -77,22 +78,44 @@ class SearchIntegrationAdapter:
     def build_search_request(
         self,
         request: GenerateWidgetCardRequest,
+        *,
+        query: str | None = None,
         input_data: dict[str, Any] | None = None,
+        size: str | None = None,
     ) -> Any | None:
         """构建 vendored SearchRequest；vendored 不可用时返回 None。
 
-        input_data 显式传入时使用它（如降维后的 dataModelSchema）；
-        否则回退到可配置的 input_data_mapper。
+        query / input_data / size 显式传入时使用它们；缺省回退到
+        request.userQuery 与可配置的 input_data_mapper。
         """
         if not vendored_loader.search_available():
             return None
         effective_input = (
             input_data if input_data is not None else self.input_data_mapper(request)
         )
+        effective_query = query if query is not None else (request.userQuery or None)
+        effective_size = size or request.size or None
         return vendored_loader.api_schema.SearchRequest(
-            query=request.userQuery or None,
+            query=effective_query,
             input_data=effective_input,
+            size=effective_size,
         )
+
+    def _build_keyword_query(
+        self,
+        request: GenerateWidgetCardRequest,
+        schema: dict[str, Any] | None,
+    ) -> str | None:
+        """structure 未命中时的关键词兜底 query：userQuery + schema 叶子 description。"""
+        parts: list[str] = []
+        if request.userQuery:
+            parts.append(request.userQuery)
+        if isinstance(schema, dict):
+            descriptions = collect_schema_descriptions(schema)
+            if descriptions:
+                parts.append(" ".join(descriptions))
+        text = " ".join(part for part in parts if part).strip()
+        return text or None
 
     async def lookup(
         self,
@@ -100,15 +123,18 @@ class SearchIntegrationAdapter:
         *,
         service: Any | None = None,
         enabled: bool = True,
+        data_model_schema: dict[str, Any] | None = None,
         input_data: dict[str, Any] | None = None,
+        size: str | None = None,
     ) -> SearchDecision:
         """执行检索并返回 SearchDecision。
 
         - enabled=False → disabled；
         - vendored 不可用 → miss(vendored_unavailable)；
         - 检索异常 → miss(search_error)；
-        - input_data：显式传入的检索载荷（推荐降维后的 dataModelSchema）；
-          缺省时回退到 input_data_mapper。
+        - data_model_schema：原始 dataModelSchema（含 description），内部降维为
+          input_data 并提取叶子 description 拼进关键词兜底 query；
+        - input_data / size：显式覆盖（input_data 缺省用降维 schema 或 mapper）；
         - 其他按 outcome 投影。
         """
         if not enabled:
@@ -121,7 +147,21 @@ class SearchIntegrationAdapter:
             return SearchDecision(outcome="miss", miss_reason="vendored_unavailable")
         if service is None:
             self._configure_default_db_path()
-        search_request = self.build_search_request(request, input_data=input_data)
+        schema = data_model_schema if isinstance(data_model_schema, dict) else None
+        effective_input = input_data
+        if effective_input is None:
+            effective_input = (
+                deflate_data_model_schema(schema)
+                if schema is not None
+                else None
+            )
+        query = self._build_keyword_query(request, schema)
+        search_request = self.build_search_request(
+            request,
+            query=query,
+            input_data=effective_input,
+            size=size,
+        )
         if search_request is None:
             return SearchDecision(outcome="miss", miss_reason="vendored_unavailable")
         try:
