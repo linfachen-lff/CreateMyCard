@@ -40,13 +40,12 @@
 - `root` 必须写浅色 `linearGradient`，不要纯白背景，不要深色背景。
 - `linearGradient` 必须从下面 8 个浅色 palette 中选一个；不要总是用浅蓝或浅紫。
 - 不要写 `constraintSize`、`minWidth`、`maxWidth`、`minHeight`、`maxHeight`。
-- 只能使用这些基础组件：`Column`、`Row`、`Stack`、`Text`、`Image`、`Progress`、`Button`、`Divider`、`Checkbox`；高级组件只用 `ActionUnit`、`RingUnit`。
+- 只能使用这些基础组件：`Column`、`Row`、`Stack`、`Text`、`Image`、`Progress`、`Button`、`Divider`、`Checkbox`。
 - 卡级 CTA 优先使用高级组件 `ActionUnit`，不要用基础 `Button` 手写按钮皮。
 - CTA 不要输出 `Button`，不要给 Button 写 `children`、`icon`、`design` 或 `action_icon`。
 - `Row`、`Column`、`Stack` 必须有 children。
 - `Text`、`Image`、`Progress`、`Divider`、`Checkbox` 不能有 children。
 - `ActionUnit` 不能有 children。
-- `RingUnit` 不能有 children；占比环只输出 `RingUnit`，不要手搓 `Stack + Progress + Image/Text` 环内部树。
 - 每个非 root 组件必须且只能被一个父组件引用。
 - children 里出现的 ID 必须有组件定义；不要输出孤儿组件。
 - Row / Column 间距只用 `itemMargin`，不要用 `space`。
@@ -101,8 +100,8 @@ content_area Column -> [text_block]
 
 2. visual-text-split
 root -> [title_area, content_area, action_area]
-content_area Row -> [main_icon 或 visual_ring, text_block]
-用于左图标/百分比 RingUnit + 右主信息 + 底部文字按钮。
+content_area Row -> [main_icon 或 main_ring_stack, text_block]
+用于左图标/百分比环 + 右主信息 + 底部文字按钮。
 
 3. text-icon-action
 root -> [title_area, body_area]
@@ -195,7 +194,7 @@ kv_row Row -> [label, value]
 主图标：
 
 - 有语义匹配 asset 时，内容区可放 `main_icon Image design:"hero-icon"`。
-- 同一主体有 0 到 100 的 number 型百分比时，优先用 `visual_ring RingUnit` 替代 `main_icon`。
+- 同一主体有 0 到 100 的 number 型百分比时，优先用 `main_ring_stack` 替代 `main_icon`。
 - 主读数很长时省略 `main_icon`，让文字使用更宽空间。
 - 图标不要写 `fillColor`，保持 SVG 原色。
 
@@ -292,22 +291,17 @@ onClick 必须原样复制 eventCandidates 的 call + args。
 capsule 带 icon 时，转换器会展开为底部通栏 Row，内部 Image + Text 整体居中。
 ```
 
-RingUnit：
+Progress：
 
 ```text
-有 0 到 100 的 number 型百分比时，优先生成 RingUnit。
-RingUnit 只输出一行，不能写 children；转换器会展开为可渲染 A2UI 环形进度。
-RingUnit.state 只用：
-- "center-icon"：环心是图标，无环内读数；必须写 centerIcon。
-- "center-text"：环心是读数；必须写 reading，禁止 centerIcon，size 必须 52。
-- "center-icon-below-text"：环心是图标，环下有读数；必须写 centerIcon 和 reading。
-RingUnit.size 只用 44 或 52。
-RingUnit.value / total 只用 number 或 {"path":"/..."}；total 通常是 100。
-RingUnit.centerIcon 必须逐字符复制 assetCandidates[].src。
-RingUnit.reading 只允许 {"path":"/..."} 或 {"path":"/...","unit":"%"}。
+有 0 到 100 的 number 型百分比时，优先生成环形 Progress。
+环形进度只用于 visual-text-split 的左侧主视觉。
+固定结构：main_ring_stack Stack -> [main_ring Progress, main_icon Image]。
+main_ring_stack 固定 44x44；main_ring 用 design:"ring"，width:44，height:44，strokeWidth:4。
+main_icon 固定 24x24，src 必须来自 assetCandidates，禁止 fillColor。
 右侧 text_block 仍要展示主读数和短标签，不要只放环。
 如果百分比是 "72%" 这种 string，且没有 number 型百分比 path，不生成环。
-不要输出 Progress/Stack/Image 组合来模拟环。
+不要生成 RingUnit。
 ```
 
 ## 9. 推荐骨架
@@ -344,8 +338,10 @@ RingUnit.reading 只允许 {"path":"/..."} 或 {"path":"/...","unit":"%"}。
 ["title_col","Column",{"width":"matchParent","layoutWeight":1,"flexShrink":1},["title_text"]]
 ["title_text","Text",{"content":"雨天打车","design":"card-title","width":"matchParent","fontColor":"#E5000000","maxLines":1,"textOverflow":"ellipsis"}]
 ["title_icon","Image",{"src":"resources/base/media/drop_1.svg","design":"source-icon","flexShrink":0}]
-["content_area","Row",{"width":136,"layoutWeight":1,"alignItems":"center","justifyContent":"start","itemMargin":8},["visual_ring","text_block"]]
-["visual_ring","RingUnit",{"state":"center-icon","size":44,"value":{"path":"/data/weather/daily/0/rainProbabilityPercent"},"total":100,"centerIcon":"resources/base/media/drop_1.svg","flexShrink":0}]
+["content_area","Row",{"width":136,"layoutWeight":1,"alignItems":"center","justifyContent":"start","itemMargin":8},["main_ring_stack","text_block"]]
+["main_ring_stack","Stack",{"width":44,"height":44,"alignContent":"center","flexShrink":0},["main_ring","main_icon"]]
+["main_ring","Progress",{"design":"ring","width":44,"height":44,"strokeWidth":4,"value":{"path":"/data/weather/daily/0/rainProbabilityPercent"},"total":100,"color":"#FF35BFFF","backgroundColor":"#22FFFFFF"}]
+["main_icon","Image",{"src":"resources/base/media/drop_1.svg","width":24,"height":24,"objectFit":"contain","flexShrink":0}]
 ["text_block","Column",{"width":"matchParent","layoutWeight":1,"flexShrink":1,"itemMargin":0,"justifyContent":"center","alignItems":"start"},["primary_text","primary_label"]]
 ["primary_text","Text",{"content":{"path":"/data/weather/daily/0/rainProbabilityPercent"},"design":"hero-value","width":"matchParent","fontColor":"#E5000000","maxLines":1,"textOverflow":"ellipsis"}]
 ["primary_label","Text",{"content":"降水概率","design":"hero-label","width":"matchParent","fontColor":"#99000000","maxLines":1,"textOverflow":"ellipsis"}]
@@ -388,7 +384,7 @@ RingUnit.reading 只允许 {"path":"/..."} 或 {"path":"/...","unit":"%"}。
 4. 是否仍有 `hero_area`、root 直挂 `support_text`、孤儿组件或空组件；有则重写。
 5. 是否存在换行、过长英文、长标题或长说明；有则缩短、降字号或删除辅助信息。
 6. 是否把长动态值放进了 28 号主读数；有则改成短静态主文案或放到小字区域。
-7. 若生成 RingUnit，是否只用了 number 型百分比 path，且仍保留右侧主读数和标签。
+7. 若生成环形 Progress，是否只用了 number 型百分比 path，且仍保留右侧主读数和标签。
 8. 是否所有 Image.src 和 ActionUnit.icon 都来自候选资源，且 Image 没有写 fillColor。
 9. 是否 `ActionUnit` 最多一个，且没有 children。
 10. 若使用 capsule，是否有 label 和 onClick；有动作图标时 icon 是否只写在 ActionUnit.icon。
