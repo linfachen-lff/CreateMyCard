@@ -8,12 +8,13 @@
 
 ```bash
 cd widget_service
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e .[dev]
-set PYTHONPATH=cloud
-uvicorn start_websocket_server:app --reload
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install -e ".[dev]"
+.\.venv\Scripts\python -m cloud.start_websocket_server
 ```
+
+必须通过 `cloud.start_websocket_server` 启动。该入口先安装当前区域的配置和密钥读取 Adapter，
+再导入 `cloud/shared/app/application.py` 中的 FastAPI 应用；共享应用模块本身不是启动入口。
 
 健康检查：
 
@@ -31,10 +32,10 @@ curl http://127.0.0.1:8855/health
 
 ## 2. 目录和版本规则
 
-能力清单由 `cloud/data/capabilities/registry_ranges.json` 统一维护 App/ROM 二维左闭右开区间，目录只作为实际注册表版本：
+能力清单由 `cloud/shared/data/capabilities/registry_ranges.json` 统一维护 App/ROM 二维左闭右开区间，目录只作为实际注册表版本：
 
 ```text
-cloud/data/capabilities/{capabilityRegistryVersion}/
+cloud/shared/data/capabilities/{capabilityRegistryVersion}/
 ├─ data_capabilities.json
 ├─ event_capabilities.json
 └─ asset_capabilities.json
@@ -71,7 +72,7 @@ repair，全部 error 消失时提前停止。
 A2UI 协议 profile 也按文件夹隔离：
 
 ```text
-cloud/data/protocol_profiles/{protocolProfileId}/
+cloud/shared/data/protocol_profiles/{protocolProfileId}/
 ├─ protocol.md
 ├─ component-catalog.md
 └─ data-binding.md
@@ -123,15 +124,15 @@ Design Compact DSL，再由服务内转换器读取该 Design profile 下的 `pr
 调用方不需要传 `protocolProfileId`，旧值也不能覆盖路由选择结果。
 
 `generateWidgetCardTerseDslNested2` 从
-`cloud/data/protocol_profiles/terse-dsl-nested-2/PROMPT.md` 读取本地 Prompt。模型输出只进入
-`cloud/services/terse_dsl_nested2_converter.py` 的受限 Parser，不作为 Python 或 JavaScript 执行；
+`cloud/shared/data/protocol_profiles/terse-dsl-nested-2/PROMPT.md` 读取本地 Prompt。模型输出只进入
+`cloud/shared/services/terse_dsl_nested2_converter.py` 的受限 Parser，不作为 Python 或 JavaScript 执行；
 Parser 只接受单根组件调用、字面量、白名单组件和安全对象键，再复用标准 A2UI 转换与 artifact 校验。
 该接口支持静态 create/edit；动态数据绑定和点击事件返回 `PROTOCOL_CAPABILITY_UNSUPPORTED`。edit 与
 第四接口共用 `enable_widget_edit` 和 artifact 的 `designcompactdsl` 块，但会按 TerseDSL-Nested-2
 语法验证其中的上一轮模型原始输出。第五接口沿用 Design Compact 后端配置；两项后端配置都可取
 `mep` 或 `openai`。其它配置值会在启动配置校验阶段直接报错，不做自动迁移。
 
-第四接口的协议区间索引位于 `cloud/data/protocol_profiles/registry_ranges.json`。未命中时，只有
+第四接口的协议区间索引位于 `cloud/shared/data/protocol_profiles/registry_ranges.json`。未命中时，只有
 `WIDGET_SERVICE_ENABLE_DEFAULT_PROTOCOL_PROFILE_FALLBACK=true` 才回退到
 `WIDGET_SERVICE_PROTOCOL_PROFILE_ID`。
 
@@ -384,7 +385,7 @@ curl http://127.0.0.1:8855/health
   "arguments": {
     "uid": "test-user-001",
     "userQuery": "整体改成蓝色风格",
-    "sourceArtifactUrl": "https://obs.todo.local/widget/artifact_uuid.md",
+    "sourceArtifactUrl": "https://example.invalid/widget/artifact_uuid.md",
     "device": {
       "romVersion": "CLS-AL30 6.0.0.328"
     }
@@ -406,7 +407,7 @@ Design Compact 两个生成入口都受同一个编辑开关控制，并沿用�
   "data": {
     "apiVersion": "v1",
     "status": "success",
-    "artifactUrl": "https://obs.todo.local/widget/artifact_uuid.md",
+    "artifactUrl": "https://example.invalid/widget/artifact_uuid.md",
     "artifactDigest": "sha256:xxx",
     "suggestSize": "2x4",
     "message": "已为你生成可用的桌面卡片。",
@@ -461,7 +462,7 @@ failed       系统异常、模型失败、OBS 失败等工程失败
 位置：
 
 ```text
-cloud/services/widget_generation_service.py
+cloud/shared/services/widget_generation_service.py
 ```
 
 签名：
@@ -628,7 +629,7 @@ _build_artifact(...) -> WidgetArtifact
 位置：
 
 ```text
-cloud/services/capability_registry.py
+cloud/shared/services/capability_registry.py
 ```
 
 ### 5.2 IDSClient
@@ -636,7 +637,7 @@ cloud/services/capability_registry.py
 位置：
 
 ```text
-cloud/services/ids_client.py
+cloud/shared/services/ids_client.py
 ```
 
 用途：封装 IDS mock/真实远程数据源选择、已安装应用查询和响应解析，输出稳定的 `IDSDeviceCapabilityState`。`enable_ids_mock` 默认开启；开启时只读 mock，关闭时忽略 mock 并只查真实远程 IDS，任一路径失败都返回空 IDS 结果且不跨数据源回退。`DeviceCapabilityResolver` 不直接读取 IDS 文件。
@@ -706,7 +707,7 @@ get_asset_capability(asset_id: str) -> AssetCapability | None
 位置：
 
 ```text
-cloud/services/protocol_registry.py
+cloud/shared/services/protocol_registry.py
 ```
 
 构造：
@@ -738,7 +739,7 @@ data/protocol_profiles/{profile_id}/data-binding.md
 位置：
 
 ```text
-cloud/services/device_capability_resolver.py
+cloud/shared/services/device_capability_resolver.py
 ```
 
 签名：
@@ -820,7 +821,7 @@ enable_ids_mock=false
 installed_apps    已安装应用 bundleName 集合；不保留也不比较 versionName
 ```
 
-默认 mock 文件为微服务内部的 `cloud/data/mock/ids_res.json`，只声明 mock 已安装应用。相对路径统一从 `cloud/` 解析，不读取仓库根目录或 Skill 目录。mock 文件是否存在不决定运行模式；运行模式只由 `enable_ids_mock` 决定。
+默认 mock 文件为微服务内部的 `cloud/shared/data/mock/ids_res.json`，只声明 mock 已安装应用。相对路径统一从 `cloud/shared/` 解析，不读取仓库根目录或 Skill 目录。mock 文件是否存在不决定运行模式；运行模式只由 `enable_ids_mock` 决定。
 
 ### 6.4 DeviceCapabilityResolver._check_required_packages
 
@@ -851,7 +852,7 @@ installed_apps    已安装应用 bundleName 集合；不保留也不比较 vers
 位置：
 
 ```text
-cloud/services/card_spec_builder.py
+cloud/shared/services/card_spec_builder.py
 ```
 
 签名：
@@ -885,7 +886,7 @@ build(
 位置：
 
 ```text
-cloud/services/task_spec_builder.py
+cloud/shared/services/task_spec_builder.py
 ```
 
 签名：
@@ -955,7 +956,7 @@ assetCandidates
 位置：
 
 ```text
-cloud/services/prompt_builder.py
+cloud/shared/services/prompt_builder.py
 ```
 
 签名：
@@ -988,7 +989,7 @@ build(
 位置：
 
 ```text
-cloud/custom/a2ui_model_client.py
+cloud/shared/custom/a2ui_model_client.py
 ```
 
 签名：
@@ -1009,7 +1010,7 @@ async generate(
 - `A2UIModelClient` 通过 `UnifiedModelClient` 调用物理模型。`mep` 路由直接使用 MEP；`openai` 路由默认
   使用 DeepSeek Platform master，模型异常重试耗尽后切换到 llmclient fallback。
 - MEP 使用应用生命周期共享的异步 HTTP 连接池，DeepSeek Platform 使用异步 WebSocket；
-  `cloud/custom/llmclient.py` 本体保持同步且不修改，通过模型 Runtime 的专用线程池适配。
+  `cloud/shared/custom/llmclient.py` 本体保持同步且不修改，通过模型 Runtime 的专用线程池适配。
 - 模型调用边界内的请求异常、未规范化内部异常、流式响应显式错误或最终没有非空 DSL，统一按模型
   生成失败处理，不依赖上游错误码。模型失败重试开关关闭时直接返回
   `failed/A2UI_GENERATION_FAILED`；开启时使用同一提示词执行有限次数的异步指数退避重试。最终失败
@@ -1033,14 +1034,14 @@ WIDGET_SERVICE_ENABLE_A2UI_MODEL_MOCK=true
 
 ### 8.3 A2UIModelClient._load_mock_data
 
-用途：读取 `cloud/custom/mock.dat` 的完整 UTF-8 文本并直接返回。
+用途：读取 `cloud/shared/custom/mock.dat` 的完整 UTF-8 文本并直接返回。
 
 ### 8.4 ArtifactValidator.validate
 
 位置：
 
 ```text
-cloud/services/validator.py
+cloud/shared/services/validator.py
 ```
 
 签名：
@@ -1049,7 +1050,7 @@ cloud/services/validator.py
 validate(artifact: WidgetArtifact, protocol_profile: dict) -> list[str]
 ```
 
-用途：校验完整 artifact，而不是只校验 DSL。标准 A2UI 直接调用 `cloud/services/card_validation/` 暴露的 Python API；不会执行 Skill 校验脚本或启动子进程。静态规则从 `cloud/data/validator_rules/` 加载，动态能力白名单从 artifact 和其能力版本目录加载；第四接口校验转换后的标准 A2UI，不保存转换前的 Design Token。
+用途：校验完整 artifact，而不是只校验 DSL。标准 A2UI 直接调用 `cloud/shared/services/card_validation/` 暴露的 Python API；不会执行 Skill 校验脚本或启动子进程。静态规则从 `cloud/shared/data/validator_rules/` 加载，动态能力白名单从 artifact 和其能力版本目录加载；第四接口校验转换后的标准 A2UI，不保存转换前的 Design Token。
 
 当前校验项：
 
@@ -1075,7 +1076,7 @@ CardSpec 必填字段、suggestSize、dataBindings 和 writeResultTo 合法
 位置：
 
 ```text
-cloud/services/retry_controller.py
+cloud/shared/services/retry_controller.py
 ```
 
 签名：
@@ -1112,7 +1113,7 @@ repairAttempted 是否执行过修复
 位置：
 
 ```text
-cloud/services/artifact_store.py
+cloud/shared/services/artifact_store.py
 ```
 
 签名：
@@ -1145,7 +1146,7 @@ Replace this method with the team's OBS uploader.
 位置：
 
 ```text
-cloud/services/source_artifact_repository.py
+cloud/shared/services/source_artifact_repository.py
 ```
 
 用途：在 edit 模式下读取 `widget-artifact-v2` 并解析具名代码块。repository 不校验 URL 的协议、host、端口、query、fragment 或对象前缀；`enable_artifact_download_mock=true` 时从 URL path 提取文件名并只读取本地 mock OBS，默认为该模式且缺文件不回退网络；关闭后将原始 URL 交给 `utils/download_file_from_url.py` 的公共 `download_file` 方法。两种模式仍限制文件大小和超时，远程模式不跟随重定向，也不记录完整 URL。
@@ -1155,7 +1156,7 @@ cloud/services/source_artifact_repository.py
 位置：
 
 ```text
-cloud/services/response_planner.py
+cloud/shared/services/response_planner.py
 ```
 
 签名：
@@ -1188,10 +1189,17 @@ plan(
 位置：
 
 ```text
-cloud/config/config.py
+cloud/shared/runtime_settings/schema.py     # 共享字段契约
+cloud/shared/runtime_settings/provider.py   # 共享读取接口
+cloud/zone/config.py                        # 当前区域的值和取值函数
 ```
 
-用途：读取环境变量和默认配置。
+`schema.py` 可以随整个 `shared` 从蓝区复制到绿区，但不保存区内值或区内取值函数。`cloud/zone/config.py`
+永远留在当前区域，通过 `create_settings()` 和 `read_secret()` 满足共享契约。必须由每个区适配的新增字段
+应声明为无默认值；绿区 Adapter 未适配时，Provider 会在共享应用导入前报告具体缺失字段。
+
+`PROJECT_ROOT` 和 `WORKSPACE_ROOT` 必须由 Adapter 指向 `cloud/zone/runtime`，不能位于可整体替换的
+`shared` 中。Provider 会在启动时校验这个边界。
 
 支持环境变量：
 
@@ -1299,15 +1307,15 @@ N 个字符、system prompt 总字符数和消息数量，不记录完整 system
 
 `WIDGET_SERVICE_OPENAI_MASTER_CLIENT` 和 `WIDGET_SERVICE_OPENAI_FALLBACK_CLIENT` 只允许配置
 `deepseek_platform` 或 `llmclient`，并且不能相同。DeepSeek Platform 的 SK 只从
-`WIDGET_SERVICE_DEEPSEEK_PLATFORM_SECRET_KEY_STS_CONFIG_KEY` 指定的 STS key 读取，默认 key 为
-`genui.deepseek.platform.secret.key`；普通配置和日志中不保存 SK。AK、WebSocket URL、模型名、业务 API
+`WIDGET_SERVICE_DEEPSEEK_PLATFORM_SECRET_KEY_STS_CONFIG_KEY` 指定的 STS key 读取；key 名和密钥读取函数
+由当前区的 `zone/config.py` 提供，共享配置和日志中不保存 SK。AK、WebSocket URL、模型名、业务 API
 Key、sender、receiver、messageName、默认国家和默认 App 使用 `WIDGET_SERVICE_DEEPSEEK_PLATFORM_*`
 配置。会话、交互、设备、国家、App 版本和 App 名称由每次 WebSocket 请求构造，同一请求的首次生成、
 重试和 repair 复用，后续请求不会串用。
 
 `WIDGET_SERVICE_DEEPSEEK_*` 仍只用于 fallback llmclient：配置 WebSocket 地址、鉴权和请求身份、模型采样参数、最大
-Token、思考/usage 开关及连接接收超时。默认值与配置抽离前 llmclient 的固定参数一致；生产环境应通过
-部署环境变量覆盖鉴权、地址和请求身份。
+Token、思考/usage 开关及连接接收超时。区内鉴权、地址和请求身份在共享契约中没有默认值，必须由
+`zone/config.py` 或 `zone/.env` 提供。
 
 常用属性：
 
@@ -1330,7 +1338,7 @@ get_settings() -> Settings
 位置：
 
 ```text
-cloud/app/logger.py
+cloud/shared/app/logger.py
 ```
 
 ```python
@@ -1344,7 +1352,7 @@ json_for_log(value: Any) -> str
 位置：
 
 ```text
-cloud/app/logger.py
+cloud/shared/app/logger.py
 ```
 
 用途：统一业务日志对象。流程节点使用 `info`，参数异常或业务失败使用 `error`；日志行可保留 `key=value` 形式，但其中的结构化值必须先调用 `json_for_log`。
@@ -1372,7 +1380,7 @@ logger.info(
 位置：
 
 ```text
-cloud/services/json_loader.py
+cloud/shared/services/json_loader.py
 ```
 
 签名：
@@ -1478,9 +1486,8 @@ meta
 ## 13. 验证命令
 
 ```bash
-cd D:\ai-workspace\code-github\CreateMyCard-team-lff
-$env:PYTHONPATH='widget_service\src'
-python -m pytest widget_service\tests
-python -m ruff check widget_service
-python -m compileall -q widget_service\cloud widget_service\tests
+cd D:\ai-workspace\code-github\CreateMyCard-team-lff\widget_service
+.\.venv\Scripts\python -m pytest tests
+.\.venv\Scripts\python -m ruff check cloud\shared tests cloud\zone
+.\.venv\Scripts\python -m compileall -q cloud\shared tests cloud\zone
 ```

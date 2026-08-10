@@ -47,13 +47,13 @@ generate_widget_card_terse_dsl_nested2_ws
 
 主要代码位置：
 
-- 路由入口：`../widget_service/cloud/api/routes.py`
-- 生成编排：`../widget_service/cloud/services/widget_generation_service.py`
-- 路由策略和 Processor：`../widget_service/cloud/services/generation_pipeline.py`
-- Terse 解析转换：`../widget_service/cloud/services/terse_dsl_nested2_converter.py`
-- Prompt：`../widget_service/cloud/services/prompt_builder.py`
-- Artifact 校验：`../widget_service/cloud/services/validator.py`
-- Artifact 保存：`../widget_service/cloud/services/artifact_store.py`
+- 路由入口：`../widget_service/cloud/shared/api/routes.py`
+- 生成编排：`../widget_service/cloud/shared/services/widget_generation_service.py`
+- 路由策略和 Processor：`../widget_service/cloud/shared/services/generation_pipeline.py`
+- Terse 解析转换：`../widget_service/cloud/shared/services/terse_dsl_nested2_converter.py`
+- Prompt：`../widget_service/cloud/shared/services/prompt_builder.py`
+- Artifact 校验：`../widget_service/cloud/shared/services/validator.py`
+- Artifact 保存：`../widget_service/cloud/shared/services/artifact_store.py`
 
 ## 3. WebSocket 请求
 
@@ -265,7 +265,7 @@ PromptBuilder.build_terse_dsl_nested2()
 System 消息读取：
 
 ```text
-cloud/data/protocol_profiles/terse-dsl-nested-2/PROMPT.md
+widget_service/cloud/shared/data/protocol_profiles/terse-dsl-nested-2/PROMPT.md
 ```
 
 User 消息是完整 TaskSpec JSON：
@@ -310,7 +310,7 @@ User 消息是完整 TaskSpec JSON：
 
 数据源：
 
-- `enable_a2ui_model_mock=true`：读取 `cloud/custom/mock.terse-dsl-nested-2.dat`。
+- `enable_a2ui_model_mock=true`：读取 `widget_service/cloud/shared/custom/mock.terse-dsl-nested-2.dat`。
 - mock 关闭：调用 `design_compact_model_backend`，当前默认 `openai`。该复合后端默认先调用
   DeepSeek Platform，模型异常重试耗尽后再切换到 llmclient。
 

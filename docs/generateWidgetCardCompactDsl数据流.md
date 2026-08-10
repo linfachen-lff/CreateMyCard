@@ -63,13 +63,13 @@ generate_widget_card_compact_dsl_ws
 
 主要代码位置：
 
-- 路由入口：`../widget_service/cloud/api/routes.py`
-- 生成编排：`../widget_service/cloud/services/widget_generation_service.py`
-- 路由策略和 Processor：`../widget_service/cloud/services/generation_pipeline.py`
-- Design Compact 转换器：`../widget_service/cloud/services/compact_dsl_a2ui_converter.py`
-- Prompt：`../widget_service/cloud/services/prompt_builder.py`
-- Artifact 校验：`../widget_service/cloud/services/validator.py`
-- Artifact 保存：`../widget_service/cloud/services/artifact_store.py`
+- 路由入口：`../widget_service/cloud/shared/api/routes.py`
+- 生成编排：`../widget_service/cloud/shared/services/widget_generation_service.py`
+- 路由策略和 Processor：`../widget_service/cloud/shared/services/generation_pipeline.py`
+- Design Compact 转换器：`../widget_service/cloud/shared/services/compact_dsl_a2ui_converter.py`
+- Prompt：`../widget_service/cloud/shared/services/prompt_builder.py`
+- Artifact 校验：`../widget_service/cloud/shared/services/validator.py`
+- Artifact 保存：`../widget_service/cloud/shared/services/artifact_store.py`
 
 ## 3. WebSocket 请求和归一化
 
@@ -154,7 +154,7 @@ App 11.7.5.205
 ROM CLS-AL30 6.0.0.328 → 6.0
 ```
 
-从 `cloud/data/protocol_profiles/registry_ranges.json` 命中：
+从 `widget_service/cloud/shared/data/protocol_profiles/registry_ranges.json` 命中：
 
 ```json
 {
@@ -321,7 +321,7 @@ PromptBuilder.build_design_compact()
 System 消息完整读取：
 
 ```text
-cloud/data/protocol_profiles/design-compact-dsl/PROMPT.md
+widget_service/cloud/shared/data/protocol_profiles/design-compact-dsl/PROMPT.md
 ```
 
 创建模式的 user 消息是完整 TaskSpec JSON 字符串：

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-CLOUD_ROOT = Path(__file__).resolve().parents[1] / "cloud"
+CLOUD_ROOT = Path(__file__).resolve().parents[1] / "cloud" / "shared"
 if str(CLOUD_ROOT) not in sys.path:
     sys.path.insert(0, str(CLOUD_ROOT))
 

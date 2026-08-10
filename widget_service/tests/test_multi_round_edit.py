@@ -12,17 +12,17 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CLOUD_ROOT = PROJECT_ROOT / "cloud"
+CLOUD_ROOT = PROJECT_ROOT / "cloud" / "shared"
 APP_VERSION = ".".join(("11", "7", "5", "205"))
 ROM_VERSION = "CLS-AL30 " + ".".join(("6", "0", "0", "328"))
 if str(CLOUD_ROOT) not in sys.path:
     sys.path.insert(0, str(CLOUD_ROOT))
 
 from api.schemas import GenerateWidgetCardRequest
-from config.config import get_settings
 from core.errors import ErrorCode, GenerationStatus
 from custom.a2ui_model_client import A2UIModelClient
 from models.generation import TaskSpec
+from runtime_settings import get_settings
 from services.prompt_builder import PromptBuilder
 from services.protocol_registry import A2UIProtocolRegistry
 from services.source_artifact_repository import (
@@ -33,7 +33,7 @@ from services.widget_generation_service import WidgetGenerationService
 from utils.upload_file_obs import UploadFileOSMS
 from ws_response_parser import parse_legacy_stream_content
 
-app = importlib.import_module("start_websocket_server").app
+app = importlib.import_module("app.application").app
 DEVICE_ODID = "5e64f3e9-0a80-d719-d689-3c36eca5eeb6"
 
 

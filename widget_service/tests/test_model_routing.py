@@ -15,18 +15,18 @@ import pytest
 from pydantic import ValidationError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CLOUD_ROOT = PROJECT_ROOT / "cloud"
+CLOUD_ROOT = PROJECT_ROOT / "cloud" / "shared"
 if str(CLOUD_ROOT) not in sys.path:
     sys.path.insert(0, str(CLOUD_ROOT))
 
-from api.routes import _model_request_context_from_payload
 from api.schemas import GenerateWidgetCardRequest
-from config.config import Settings
 from custom.deepseek_platform_client import DeepSeekPlatformClient
 from custom.model_runtime import ModelExecutionRuntime
 from custom.model_transport import ModelTransportError
 from custom.unified_model_client import UnifiedModelClient
 from models.generation import ModelRequestContext
+from runtime_settings import Settings
+from services.websocket_operation_runner import _model_request_context_from_payload
 
 
 def _request_context() -> ModelRequestContext:
@@ -73,6 +73,9 @@ async def test_deepseek_platform_builds_signed_dynamic_request_and_closes_socket
     settings = Settings(
         _env_file=None,
         deepseek_platform_access_key="access-key",
+        deepseek_platform_secret_key_sts_config_key=(
+            "genui.deepseek.platform.secret.key"
+        ),
         deepseek_platform_ws_url="ws://model.test/deepseek",
         deepseek_platform_model_name="model-test",
         deepseek_platform_api_key="business-key",

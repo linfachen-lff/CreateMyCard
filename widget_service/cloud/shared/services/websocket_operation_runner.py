@@ -1,0 +1,847 @@
+# -*- coding: utf-8 -*-
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
+"""统一执行工具 WebSocket 的连接、消息帧、业务调用和清理生命周期。"""
+
+import asyncio
+import json
+import time
+import traceback
+import uuid
+from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import Any
+
+from fastapi import WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, ValidationError
+from starlette.concurrency import run_in_threadpool
+
+from api.schemas import ToolRequestEnvelope, VersionedToolRequest
+from app.logger import json_for_log, logger, task_logger
+from app.websocket_metrics import websocket_metrics
+from core.errors import ErrorCode
+from custom.model_runtime import ModelExecutionRuntime
+from models.generation import DEFAULT_WIDGET_SIZE, ModelRequestContext, WidgetSize
+from models.service import (
+    WidgetPluginReply,
+    WidgetPluginStreamResponse,
+    WidgetStreamInfo,
+    WidgetWebSocketErrorMessage,
+    WidgetWebSocketResultMessage,
+)
+from runtime_settings import get_settings
+from services.capability_registry import CapabilityRegistry
+from services.widget_directive import (
+    WidgetDirectiveState,
+    build_widget_directive_response,
+)
+from services.widget_generation_service import WidgetGenerationService
+
+_MODULE = "[WS Runner]"
+
+TEMPORARY_COMPACT_DIRECTIVE_OPERATION = "generateWidgetCardCompactDslWithDirective"
+GENERATION_OPERATIONS = frozenset(
+    {
+        "generateWidgetCard",
+        "generateWidgetCardCompactDsl",
+        "generateWidgetCardTerseDslNested2",
+        TEMPORARY_COMPACT_DIRECTIVE_OPERATION,
+    }
+)
+# 临时接口只在路由层强制开启指令帧；删除临时入口时一并删除该集合即可。
+FORCED_WIDGET_DIRECTIVE_OPERATIONS = frozenset(
+    {TEMPORARY_COMPACT_DIRECTIVE_OPERATION}
+)
+
+ERROR_EXPLANATIONS = {
+    ErrorCode.INVALID_ARGUMENTS.value: (
+        "工具参数传入有误，请检查必填字段、字段类型和字段取值后重新调用。报错信息如下"
+    ),
+    ErrorCode.UNKNOWN_CAPABILITY.value: (
+        "工具参数中包含未注册的能力 ID，请重新获取能力概述，并仅使用返回的能力 ID。报错信息如下"
+    ),
+    ErrorCode.WRITE_RESULT_CONFLICT.value: (
+        "多个数据能力的写入路径存在冲突，请调整 writeResultTo，"
+        "避免路径相同、嵌套或相互覆盖。报错信息如下"
+    ),
+    ErrorCode.NO_EFFECTIVE_CAPABILITY.value: (
+        "本次请求没有可用于生成卡片的有效能力，请检查候选能力、参数和设备可用性后重新规划。报错信息如下"
+    ),
+    ErrorCode.PROTOCOL_CAPABILITY_UNSUPPORTED.value: (
+        "当前指定的 DSL 协议不支持本次请求中的动态能力或编辑模式，"
+        "请改为静态新建请求，"
+        "或选择支持对应能力的生成接口。报错信息如下"
+    ),
+    ErrorCode.APP_VERSION_UNSUPPORTED.value: (
+        "当前设备的 App 或 ROM 版本不在服务支持范围内，请停止继续生成，并向用户说明版本暂不支持。"
+        "报错信息如下"
+    ),
+    ErrorCode.PACKAGE_NOT_INSTALLED.value: (
+        "当前设备未安装能力依赖的应用，请移除对应候选能力，或提示用户安装依赖应用后重试。报错信息如下"
+    ),
+    ErrorCode.A2UI_GENERATION_FAILED.value: (
+        "卡片生成模型调用失败，或模型没有返回有效 DSL；"
+        "本次没有可继续处理的卡片结果，建议稍后重新调用。"
+        "报错信息如下"
+    ),
+    ErrorCode.VALIDATION_FAILED.value: (
+        "模型生成的卡片 DSL 存在 error 级校验问题，且当前结果未通过修复校验，"
+        "请结合错误位置重新生成。"
+        "报错信息如下"
+    ),
+    ErrorCode.ARTIFACT_UPLOAD_FAILED.value: (
+        "卡片内容已经生成，但产物保存或上传失败，当前没有可用的 artifactUrl，"
+        "建议稍后重新调用。报错信息如下"
+    ),
+    ErrorCode.WIDGET_EDIT_DISABLED.value: (
+        "当前服务没有开启卡片编辑功能，无法处理 sourceArtifactUrl；"
+        "请改为新建卡片，或开启编辑功能后重试。"
+        "报错信息如下"
+    ),
+    ErrorCode.SOURCE_ARTIFACT_NOT_FOUND.value: (
+        "没有找到待编辑的来源卡片产物，请检查 sourceArtifactUrl 是否正确，"
+        "或重新创建卡片。报错信息如下"
+    ),
+    ErrorCode.SOURCE_ARTIFACT_DOWNLOAD_FAILED.value: (
+        "待编辑的来源卡片产物下载失败，请检查 sourceArtifactUrl 的可访问性后重试。报错信息如下"
+    ),
+    ErrorCode.SOURCE_ARTIFACT_SCHEMA_UNSUPPORTED.value: (
+        "待编辑的来源卡片产物版本或结构不受当前服务支持，请重新创建卡片，不要继续沿用该产物。报错信息如下"
+    ),
+    ErrorCode.SOURCE_ARTIFACT_INVALID.value: (
+        "待编辑的来源卡片产物内容无效或不完整，请检查来源产物，或重新创建卡片。报错信息如下"
+    ),
+    ErrorCode.TIMEOUT.value: (
+        "工具执行超时，本次调用未在限定时间内完成，建议稍后重试；不要把本次结果当作成功结果。报错信息如下"
+    ),
+}
+DEFAULT_ERROR_EXPLANATION = (
+    "工具执行过程中发生未分类的服务异常，本次调用未成功完成，建议稍后重试。报错信息如下"
+)
+
+
+OperationHandler = Callable[..., Any]
+ServiceFactory = Callable[[ModelExecutionRuntime | None], WidgetGenerationService]
+
+
+@dataclass(frozen=True)
+class WebSocketOperationSpec:
+    """声明一个 WebSocket 路径与业务能力之间的稳定绑定。"""
+
+    operation: str
+    request_model: type[BaseModel]
+    handler: OperationHandler
+    heartbeat: bool = False
+    heartbeat_interval: float = 6.0
+    handler_in_threadpool: bool = True
+
+
+def get_service(
+    model_runtime: ModelExecutionRuntime | None = None,
+) -> WidgetGenerationService:
+    """创建卡片生成服务对象。
+
+    入参：无。
+    出参：WidgetGenerationService 实例。
+    """
+    return WidgetGenerationService(model_runtime=model_runtime)
+
+
+def _request_id_from_envelope(envelope: ToolRequestEnvelope) -> str | None:
+    """从外部请求包络中生成 requestId。
+
+    入参：
+    - envelope：已经解析后的 WebSocket 外部请求包络。
+    出参：`sessionId&interactionId` 格式的 requestId；会话字段缺失时返回 None。
+    """
+    session_id = envelope.session.sessionId
+    interaction_id = envelope.session.interactionId
+    if session_id and interaction_id:
+        return f"{session_id}&{interaction_id}"
+    if session_id:
+        return session_id
+    return None
+
+
+def _request_id_from_raw_payload(payload: Any) -> str | None:
+    """在完整协议校验前，从原始请求中提取稳定的 requestId。"""
+    if not isinstance(payload, dict):
+        return None
+    session = payload.get("session")
+    if isinstance(session, dict):
+        session_id = str(session.get("sessionId") or "").strip()
+        interaction_id = str(session.get("interactionId") or "").strip()
+        if session_id and interaction_id:
+            return f"{session_id}&{interaction_id}"
+        if session_id:
+            return session_id
+    request_id = payload.get("requestId")
+    if request_id is None:
+        return None
+    return str(request_id).strip() or None
+
+
+def _normalize_directive_size(
+    value: Any,
+    fallback: WidgetSize = DEFAULT_WIDGET_SIZE,
+) -> WidgetSize:
+    """将指令尺寸限制为服务支持的标准值。"""
+    if value == "2x4":
+        return "2x4"
+    if value == "2x2":
+        return "2x2"
+    return fallback
+
+
+def _directive_size_from_raw_payload(payload: Any) -> WidgetSize:
+    """在请求模型构造前读取显式尺寸，缺失或非法时使用首次生成默认值。"""
+    if not isinstance(payload, dict):
+        return DEFAULT_WIDGET_SIZE
+    content = payload.get("content")
+    if not isinstance(content, dict):
+        return DEFAULT_WIDGET_SIZE
+    return _normalize_directive_size(content.get("size"))
+
+
+def _pick_device_rom_version(device_info: dict[str, Any]) -> str:
+    """从 deviceInfo 中读取 ROM 版本。
+
+    入参：
+    - device_info：外部请求中的 deviceInfo 字典。
+    出参：内部 DeviceContext 使用的 romVersion。
+    """
+    settings = get_settings()
+    value = device_info.get("romVersion")
+    if value is not None and str(value).strip():
+        return CapabilityRegistry.normalize_rom_version(str(value))
+    return CapabilityRegistry.normalize_rom_version(settings.default_device_rom_version)
+
+
+def _device_context_from_envelope(
+    envelope: ToolRequestEnvelope,
+    odid: Any = None,
+) -> dict[str, Any]:
+    """把外部 deviceInfo 和 content.odid 转换成内部 DeviceContext 字典。
+
+    入参：
+    - envelope：已经解析后的 WebSocket 外部请求包络。
+    - odid：content 中可选的设备 odid。
+    出参：可直接传给 DeviceContext 的字典。
+    """
+    device_info = envelope.deviceInfo.model_dump(mode="json", exclude_none=True)
+    phone_type = device_info.get("phoneType")
+    raw_rom_version = device_info.get("romVersion")
+    if raw_rom_version is None or not str(raw_rom_version).strip():
+        raw_rom_version = get_settings().default_device_rom_version
+    return {
+        "deviceId": device_info.get("deviceId"),
+        "deviceType": phone_type or str(device_info.get("deviceType", "")),
+        "sysVersion": device_info.get("sysVer"),
+        "deviceName": device_info.get("deviceFormation"),
+        "odid": odid,
+        "udid": device_info.get("udid"),
+        "romVersion": _pick_device_rom_version(device_info),
+        "_sourceRomVersion": str(raw_rom_version),
+        "marketingName": device_info.get("marketingName") or phone_type,
+    }
+
+
+def _arguments_from_envelope(envelope: ToolRequestEnvelope, operation: str) -> dict[str, Any]:
+    """从外部请求包络中组装内部业务入参。
+
+    入参：
+    - envelope：已经解析后的 WebSocket 外部请求包络。
+    - operation：当前 WebSocket path 对应的业务能力名。
+    出参：可直接传给具体请求模型的业务入参字典。
+    """
+    arguments = dict(envelope.content)
+    odid = arguments.pop("odid", None)
+    if operation in GENERATION_OPERATIONS and not arguments.get("userQuery"):
+        arguments["userQuery"] = envelope.utterance.original if envelope.utterance else ""
+    arguments["uid"] = envelope.userAuth.user.userId or ""
+    arguments["locale"] = envelope.deviceInfo.locale or "zh-CN"
+    arguments["prdVer"] = envelope.deviceInfo.prdVer
+    arguments["device"] = _device_context_from_envelope(envelope, odid)
+    return arguments
+
+
+def _normalize_payload(
+    payload: dict[str, Any],
+    operation: str,
+) -> tuple[str | None, dict[str, Any]]:
+    """归一化 WebSocket 原始报文。
+
+    入参：
+    - payload：客户端发送的 JSON 对象。
+    - operation：当前 WebSocket path 对应的业务能力名。
+    出参：requestId 与内部业务入参；优先支持 content/deviceInfo/session 新协议。
+    """
+    if "content" in payload or "deviceInfo" in payload or "session" in payload:
+        envelope = ToolRequestEnvelope(**payload)
+        return _request_id_from_envelope(envelope), _arguments_from_envelope(
+            envelope, operation
+        )
+    return payload.get("requestId"), payload.get("arguments", payload)
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    """把请求中的可选对象安全归一化为字典。"""
+    return value if isinstance(value, dict) else {}
+
+
+def _first_text(*values: Any, default: str = "") -> str:
+    """按顺序选择第一个非空值并转换为字符串。"""
+    for value in values:
+        if value is not None and str(value).strip():
+            return str(value)
+    return default
+
+
+def _model_request_context_from_payload(
+    payload: dict[str, Any],
+    request: VersionedToolRequest,
+) -> ModelRequestContext:
+    """从原始工具请求构造模型服务使用的稳定动态上下文。"""
+    settings = get_settings()
+    session = _mapping(payload.get("session"))
+    device_info = _mapping(payload.get("deviceInfo"))
+    content = _mapping(payload.get("content"))
+    arguments = _mapping(payload.get("arguments"))
+    session_id = _first_text(session.get("sessionId"), default=uuid.uuid4().hex)
+    interaction_id = _first_text(
+        session.get("interactionId"),
+        default=uuid.uuid4().hex,
+    )
+    device_id = _first_text(
+        session.get("deviceId"),
+        device_info.get("deviceId"),
+        request.device.deviceId,
+        default=f"aiwidget-{uuid.uuid4().hex}",
+    )
+    app_version = _first_text(
+        session.get("clientVersion"),
+        session.get("prdVer"),
+        device_info.get("prdVer"),
+        request.prdVer,
+        default=settings.default_prd_version,
+    )
+    app_name = _first_text(
+        session.get("packageName"),
+        payload.get("bundleName"),
+        content.get("bundleName"),
+        arguments.get("bundleName"),
+        default=settings.deepseek_platform_default_app_name,
+    )
+    country_code = _first_text(
+        device_info.get("countryCode"),
+        default=settings.deepseek_platform_default_country_code,
+    )
+    return ModelRequestContext(
+        session_id=session_id,
+        interaction_id=interaction_id,
+        device_id=device_id,
+        country_code=country_code,
+        app_version=app_version,
+        app_name=app_name,
+    )
+
+
+def _error_details(exc: ValidationError | ValueError) -> list[dict[str, Any]] | str:
+    """将参数异常转换成可序列化详情。
+
+    入参：
+    - exc：Pydantic 校验异常或业务参数异常。
+    出参：可写入 WebSocket 错误消息的详情对象。
+    """
+    if isinstance(exc, ValidationError):
+        # Pydantic 的 ctx 可能携带原生 ValueError，input 可能包含完整请求或注册表；
+        # 二者既不适合对外返回，也可能导致错误响应再次序列化失败。
+        return exc.errors(include_context=False, include_input=False)
+    return str(exc)
+
+
+def _build_plugin_stream_response(
+    legacy_message: WidgetWebSocketResultMessage | WidgetWebSocketErrorMessage,
+    streaming_text_id: str | None = None,
+) -> WidgetPluginStreamResponse:
+    """把旧版完整消息转换成华为流处理插件输出包络。
+
+    入参：
+    - legacy_message：旧版 WebSocket 完整出参。
+    出参：插件顶层始终成功；业务异常说明和完整旧消息放入 streamContent。
+    """
+    resolved_streaming_text_id = streaming_text_id or legacy_message.requestId or uuid.uuid4().hex
+    stream_content = str(legacy_message)
+    error_explanation = _error_explanation(legacy_message.errorCode)
+    if error_explanation:
+        stream_content = f"{error_explanation}：{stream_content}"
+    return WidgetPluginStreamResponse(
+        errorCode="0",
+        errorMessage="",
+        reply=WidgetPluginReply(
+            streamInfo=WidgetStreamInfo(
+                # 插件只消费字符串字段；保留旧消息的完整字符串表现，避免拆散旧协议字段。
+                streamContent=stream_content,
+                streamingTextId=resolved_streaming_text_id,
+            ),
+            items=[],
+        ),
+    )
+
+
+def _error_explanation(error_code: str) -> str:
+    """把内部错误码转换成主 Agent 可理解、可采取下一步动作的异常说明。"""
+    if not error_code:
+        return ""
+    return ERROR_EXPLANATIONS.get(error_code, DEFAULT_ERROR_EXPLANATION)
+
+
+async def _send_websocket_json(
+    websocket: WebSocket,
+    payload: dict[str, Any],
+    operation: str,
+    request_id: str | None,
+    frame_type: str,
+) -> bool:
+    """发送 WebSocket JSON 帧，并处理客户端已断开的情况。"""
+    try:
+        await websocket.send_json(payload)
+        return True
+    except (WebSocketDisconnect, RuntimeError) as exc:
+        logger.error(
+            f"{_MODULE} widget_operation_ws_send_failed request_id={request_id} "
+            f"operation={operation} frame_type={frame_type} "
+            f"exception_type={type(exc).__name__} exception={exc!r} "
+            f"traceback={traceback.format_exc()}"
+        )
+        return False
+
+
+async def _send_widget_directive_command(
+    websocket: WebSocket,
+    raw_payload: dict[str, Any],
+    operation: str,
+    request_id: str | None,
+    streaming_text_id: str,
+    state: WidgetDirectiveState,
+    card_id: str,
+    size: WidgetSize,
+    artifact_url: str = "",
+) -> bool:
+    """按开关发送生成进度指令，不改变原有业务帧和异常处理。"""
+    if not _widget_directive_commands_enabled(operation):
+        return True
+    response = build_widget_directive_response(
+        raw_payload,
+        state,
+        streaming_text_id,
+        card_id,
+        request_id or "",
+        size,
+        artifact_url,
+    )
+    return await _send_websocket_json(
+        websocket,
+        response.model_dump(mode="json", exclude_none=True),
+        operation,
+        request_id,
+        f"command_{state.value}",
+    )
+
+
+def _widget_directive_commands_enabled(operation: str) -> bool:
+    """判断当前生成接口是否需要下发端侧卡片指令。"""
+    settings_enabled = get_settings().enable_widget_directive_commands
+    operation_forced = operation in FORCED_WIDGET_DIRECTIVE_OPERATIONS
+    return settings_enabled or operation_forced
+
+
+def _generation_result_directive(
+    result_data: dict[str, Any],
+) -> tuple[WidgetDirectiveState, str]:
+    """根据生成结果是否具有有效 artifact 地址选择结束指令。"""
+    status = result_data.get("status")
+    artifact_url = result_data.get("artifactUrl")
+    valid_artifact_url = isinstance(artifact_url, str) and bool(artifact_url.strip())
+    if status in {"success", "degraded"} and valid_artifact_url:
+        return WidgetDirectiveState.SUCCESS, artifact_url
+    return WidgetDirectiveState.FAILURE, ""
+
+
+async def _heartbeat_sender(
+    websocket: WebSocket,
+    streaming_text_id: str,
+    interval: float = 6.0,
+) -> None:
+    """周期性向客户端发送 partial 心跳帧。
+
+    入参：
+    - websocket：客户端 WebSocket 连接。
+    - streaming_text_id：一次请求内稳定的流式文本 ID。
+    - interval：心跳发送间隔秒数，默认 6 秒。
+    出参：无；协程会持续运行直到被取消或连接关闭。
+    """
+    partial_frame = WidgetPluginStreamResponse(
+        errorCode="0",
+        errorMessage="",
+        reply=WidgetPluginReply(
+            streamInfo=WidgetStreamInfo(
+                streamContent="",
+                streamingTextId=streaming_text_id,
+                streamType="partial",
+                textType="markdown",
+            ),
+            items=[],
+        ),
+    )
+    partial_json = json.dumps(
+        partial_frame.model_dump(mode="json", exclude_none=True),
+        ensure_ascii=False,
+    )
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            await websocket.send_text(partial_json)
+    except asyncio.CancelledError:
+        logger.debug(f"{_MODULE} widget_operation_ws_heartbeat_cancelled")
+        return
+    except Exception:
+        logger.error(f"{_MODULE} widget_operation_ws_heartbeat_failed", exc_info=True)
+
+
+async def _stop_heartbeat(heartbeat_task: asyncio.Task | None) -> None:
+    """停止当前轮次的心跳，并等待发送协程彻底退出。"""
+    if heartbeat_task is None:
+        return
+    heartbeat_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await heartbeat_task
+
+
+async def _serve_operation_websocket(
+    websocket: WebSocket,
+    spec: WebSocketOperationSpec,
+    *,
+    service_factory: ServiceFactory,
+    metrics,
+) -> None:
+    """在一个连接内逐轮执行接收、帧生命周期、业务调用和资源回收。"""
+    operation = spec.operation
+    request_model = spec.request_model
+    handler = spec.handler
+    heartbeat = spec.heartbeat
+    heartbeat_interval = spec.heartbeat_interval
+    handler_in_threadpool = spec.handler_in_threadpool
+    await websocket.accept()
+    metrics.connection_opened()
+    logger.info(f"{_MODULE} widget_operation_ws_connected operation={operation}")
+    try:
+        model_runtime = getattr(websocket.app.state, "model_runtime", None)
+        service = service_factory(model_runtime)
+        while True:
+            card_id = str(uuid.uuid4())
+            directive_size = DEFAULT_WIDGET_SIZE
+            widget_directive_started = False
+            try:
+                payload = await websocket.receive_json()
+            except ValueError as exc:
+                logger.error(
+                    f"{_MODULE} widget_operation_ws_invalid_json operation={operation} "
+                    f"exception_type={type(exc).__name__} exception={exc!r}"
+                )
+                error_message = WidgetWebSocketErrorMessage(
+                    tool=operation,
+                    operation=operation,
+                    errorCode=ErrorCode.INVALID_ARGUMENTS.value,
+                    error={
+                        "message": "WebSocket request body must be valid JSON.",
+                        "details": str(exc),
+                    },
+                )
+                streaming_text_id = uuid.uuid4().hex
+                plugin_response = _build_plugin_stream_response(
+                    error_message,
+                    streaming_text_id,
+                )
+                if not await _send_websocket_json(
+                    websocket,
+                    plugin_response.model_dump(mode="json", exclude_none=True),
+                    operation,
+                    None,
+                    "final_error",
+                ):
+                    return
+                continue
+            # 完整协议校验前只提取关联 ID，保证原始请求日志也能归属当前轮次。
+            raw_request_id = _request_id_from_raw_payload(payload)
+            directive_size = _directive_size_from_raw_payload(payload)
+            task_logger.set_session_id(raw_request_id or "None")
+            logger.info(
+                f"widget_operation_ws_raw_request_received operation={operation} "
+                f"request_body={json_for_log(payload)}"
+            )
+            started_at = time.perf_counter()
+            request_id = None
+            arguments: dict[str, Any] = {}
+            heartbeat_task: asyncio.Task | None = None
+            streaming_text_id = uuid.uuid4().hex
+            metrics.task_started()
+            try:
+                if not isinstance(payload, dict):
+                    raise ValueError("WebSocket request body must be a JSON object")
+                request_id, arguments = _normalize_payload(payload, operation)
+                # 解析出 requestId 后立即写入日志上下文，后续链路共用同一日志标识。
+                task_logger.set_session_id(request_id or "None")
+                logger.info(
+                    f"{_MODULE} widget_operation_ws_payload_received request_id={request_id} "
+                    f"operation={operation} payload_keys={json_for_log(sorted(payload))} "
+                    f"argument_keys={json_for_log(sorted(arguments))}"
+                )
+                # 有 requestId 时沿用它，否则为当前消息生成稳定的流式文本 ID。
+                streaming_text_id = request_id or uuid.uuid4().hex
+                device_arguments = arguments.get("device")
+                source_rom_version = None
+                if isinstance(device_arguments, dict):
+                    source_rom_version = device_arguments.pop("_sourceRomVersion", None)
+                request = request_model(**arguments)
+                request.device._source_rom_version = source_rom_version
+                if operation in GENERATION_OPERATIONS:
+                    request._model_request_context = _model_request_context_from_payload(
+                        payload,
+                        request,
+                    )
+                request_log = json_for_log(
+                    request.model_dump(
+                        mode="json",
+                        exclude={"uid", "sourceArtifactUrl"},
+                        exclude_none=True,
+                    )
+                )
+                logger.info(
+                    f"{_MODULE} widget_operation_ws_message_received request_id={request_id} "
+                    f"operation={operation} "
+                    f"request={request_log}"
+                )
+                # 收到合法请求后先发送 start 帧，再启动心跳协程。
+                start_frame = WidgetPluginStreamResponse(
+                    errorCode="0",
+                    errorMessage="",
+                    reply=WidgetPluginReply(
+                        streamInfo=WidgetStreamInfo(
+                            streamContent="",
+                            streamingTextId=streaming_text_id,
+                            streamType="start",
+                            textType="markdown",
+                        ),
+                        items=[],
+                    ),
+                )
+                if not await _send_websocket_json(
+                    websocket,
+                    start_frame.model_dump(mode="json", exclude_none=True),
+                    operation,
+                    request_id,
+                    "start",
+                ):
+                    return
+                if heartbeat:
+                    heartbeat_task = asyncio.create_task(
+                        _heartbeat_sender(websocket, streaming_text_id, heartbeat_interval)
+                    )
+                if handler_in_threadpool:
+                    result = await run_in_threadpool(handler, service, request)
+                else:
+                    # 心跳通道断开不取消内部生成、repair 或 artifact 保存。
+                    async def send_model_start_command(
+                        resolved_size: WidgetSize,
+                        raw_payload=payload,
+                        current_request_id=request_id,
+                        current_streaming_text_id=streaming_text_id,
+                        current_card_id=card_id,
+                    ) -> None:
+                        nonlocal directive_size, widget_directive_started
+                        directive_size = resolved_size
+                        command_enabled = _widget_directive_commands_enabled(operation)
+                        command_sent = await _send_widget_directive_command(
+                            websocket,
+                            raw_payload,
+                            operation,
+                            current_request_id,
+                            current_streaming_text_id,
+                            WidgetDirectiveState.START,
+                            current_card_id,
+                            resolved_size,
+                        )
+                        if command_enabled and command_sent:
+                            widget_directive_started = True
+
+                    result = await handler(service, request, send_model_start_command)
+                result_data = result.model_dump(mode="json", exclude_none=True)
+                duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+                logger.info(
+                    f"{_MODULE} widget_operation_ws_handler_completed request_id={request_id} "
+                    f"operation={operation} duration_ms={duration_ms} "
+                    f"response={json_for_log(result_data)}"
+                )
+                await _stop_heartbeat(heartbeat_task)
+                heartbeat_task = None
+                result_message = WidgetWebSocketResultMessage(
+                    tool=operation,
+                    operation=operation,
+                    requestId=request_id,
+                    data=result_data,
+                    status=result_data.get("status", "success"),
+                    errorCode=result_data.get("errorCode", ""),
+                    error={},
+                )
+                if operation in GENERATION_OPERATIONS and widget_directive_started:
+                    directive_state, artifact_url = _generation_result_directive(result_data)
+                    directive_size = _normalize_directive_size(
+                        result_data.get("suggestSize"),
+                        directive_size,
+                    )
+                    if not await _send_widget_directive_command(
+                        websocket,
+                        payload,
+                        operation,
+                        request_id,
+                        streaming_text_id,
+                        directive_state,
+                        card_id,
+                        directive_size,
+                        artifact_url,
+                    ):
+                        return
+                plugin_response = _build_plugin_stream_response(
+                    result_message,
+                    streaming_text_id,
+                )
+                if not await _send_websocket_json(
+                    websocket,
+                    plugin_response.model_dump(mode="json", exclude_none=True),
+                    operation,
+                    request_id,
+                    "final",
+                ):
+                    return
+            except ValueError as exc:
+                await _stop_heartbeat(heartbeat_task)
+                heartbeat_task = None
+                duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+                logger.error(
+                    f"{_MODULE} widget_operation_ws_invalid_arguments request_id={request_id} "
+                    f"operation={operation} duration_ms={duration_ms} "
+                    f"details={json_for_log(_error_details(exc))} "
+                    f"exception_type={type(exc).__name__} exception={exc!r} "
+                    f"traceback={traceback.format_exc()}"
+                )
+                error_message = WidgetWebSocketErrorMessage(
+                    tool=operation,
+                    operation=operation,
+                    requestId=request_id,
+                    errorCode="INVALID_ARGUMENTS",
+                    error={
+                        "message": f"Invalid {operation} arguments.",
+                        "details": _error_details(exc),
+                    },
+                )
+                if operation in GENERATION_OPERATIONS and widget_directive_started:
+                    raw_payload = payload if isinstance(payload, dict) else {}
+                    if not await _send_widget_directive_command(
+                        websocket,
+                        raw_payload,
+                        operation,
+                        request_id,
+                        streaming_text_id,
+                        WidgetDirectiveState.FAILURE,
+                        card_id,
+                        directive_size,
+                    ):
+                        return
+                plugin_response = _build_plugin_stream_response(
+                    error_message,
+                    streaming_text_id,
+                )
+                if not await _send_websocket_json(
+                    websocket,
+                    plugin_response.model_dump(mode="json", exclude_none=True),
+                    operation,
+                    request_id,
+                    "final_error",
+                ):
+                    return
+            except Exception as exc:
+                await _stop_heartbeat(heartbeat_task)
+                heartbeat_task = None
+                duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+                logger.error(
+                    f"{_MODULE} widget_operation_ws_failed request_id={request_id} "
+                    f"operation={operation} duration_ms={duration_ms} error={exc} "
+                    f"exception_type={type(exc).__name__} exception={exc!r} "
+                    f"traceback={traceback.format_exc()}"
+                )
+                error_message = WidgetWebSocketErrorMessage(
+                    tool=operation,
+                    operation=operation,
+                    requestId=request_id,
+                    errorCode="FAILED",
+                    error={"message": str(exc)},
+                )
+                if operation in GENERATION_OPERATIONS and widget_directive_started:
+                    raw_payload = payload if isinstance(payload, dict) else {}
+                    if not await _send_widget_directive_command(
+                        websocket,
+                        raw_payload,
+                        operation,
+                        request_id,
+                        streaming_text_id,
+                        WidgetDirectiveState.FAILURE,
+                        card_id,
+                        directive_size,
+                    ):
+                        return
+                plugin_response = _build_plugin_stream_response(
+                    error_message,
+                    streaming_text_id,
+                )
+                if not await _send_websocket_json(
+                    websocket,
+                    plugin_response.model_dump(mode="json", exclude_none=True),
+                    operation,
+                    request_id,
+                    "final_error",
+                ):
+                    return
+            finally:
+                metrics.task_finished()
+                await _stop_heartbeat(heartbeat_task)
+    except WebSocketDisconnect:
+        logger.info(f"{_MODULE} widget_operation_ws_disconnected operation={operation}")
+        return
+    finally:
+        metrics.connection_closed()
+
+class WebSocketOperationRunner:
+    """统一管理工具 WebSocket 的连接与单轮消息生命周期。"""
+
+    def __init__(
+        self,
+        *,
+        service_factory: ServiceFactory = get_service,
+        metrics=websocket_metrics,
+    ) -> None:
+        self._service_factory = service_factory
+        self._metrics = metrics
+
+    async def serve(
+        self,
+        websocket: WebSocket,
+        spec: WebSocketOperationSpec,
+    ) -> None:
+        """运行一个已声明的 WebSocket operation，直到客户端断开。"""
+        await _serve_operation_websocket(
+            websocket,
+            spec,
+            service_factory=self._service_factory,
+            metrics=self._metrics,
+        )

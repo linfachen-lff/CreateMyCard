@@ -6,7 +6,7 @@
 HarmonyOS A2UI Form NDJSON。
 
 - 转换器：
-  `widget_service/cloud/services/compact_dsl_a2ui_converter.py`
+  `widget_service/cloud/shared/services/compact_dsl_a2ui_converter.py`
 - 转换器测试：
   `widget_service/tests/test_compact_dsl_a2ui_converter.py`
 - 上游参考快照：

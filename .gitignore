@@ -17,6 +17,7 @@ Desktop.ini
 tmp/
 temp/
 workspace/
+widget_service/cloud/zone/runtime/
 
 # Environment / secrets
 .env

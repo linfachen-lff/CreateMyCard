@@ -44,16 +44,16 @@ generate_widget_card_ws
 
 主要代码位置：
 
-- 路由入口：`../widget_service/cloud/api/routes.py`
-- 请求模型：`../widget_service/cloud/api/schemas.py`
-- 生成编排：`../widget_service/cloud/services/widget_generation_service.py`
-- CardSpec：`../widget_service/cloud/services/card_spec_builder.py`
-- TaskSpec：`../widget_service/cloud/services/task_spec_builder.py`
-- Prompt：`../widget_service/cloud/services/prompt_builder.py`
-- 模型客户端：`../widget_service/cloud/custom/a2ui_model_client.py`
-- DSL Processor：`../widget_service/cloud/services/generation_pipeline.py`
-- Artifact 校验：`../widget_service/cloud/services/validator.py`
-- Artifact 保存：`../widget_service/cloud/services/artifact_store.py`
+- 路由入口：`../widget_service/cloud/shared/api/routes.py`
+- 请求模型：`../widget_service/cloud/shared/api/schemas.py`
+- 生成编排：`../widget_service/cloud/shared/services/widget_generation_service.py`
+- CardSpec：`../widget_service/cloud/shared/services/card_spec_builder.py`
+- TaskSpec：`../widget_service/cloud/shared/services/task_spec_builder.py`
+- Prompt：`../widget_service/cloud/shared/services/prompt_builder.py`
+- 模型客户端：`../widget_service/cloud/shared/custom/a2ui_model_client.py`
+- DSL Processor：`../widget_service/cloud/shared/services/generation_pipeline.py`
+- Artifact 校验：`../widget_service/cloud/shared/services/validator.py`
+- Artifact 保存：`../widget_service/cloud/shared/services/artifact_store.py`
 
 ## 3. WebSocket 原始请求
 
@@ -373,7 +373,7 @@ validation_failure_blocking = false
 
 `A2UIModelClient.generate()` 根据配置选择 mock 或真实模型：
 
-- mock 开启：读取 `cloud/custom/mock.dat`。
+- mock 开启：读取 `widget_service/cloud/shared/custom/mock.dat`。
 - mock 关闭：调用 `a2ui_form_model_backend` 对应的统一模型入口。默认使用 `mep`；配置为 `openai` 时，
   默认由 DeepSeek Platform 作为 master、llmclient 作为 fallback。
 

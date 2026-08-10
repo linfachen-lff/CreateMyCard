@@ -18,13 +18,25 @@ from anyio import to_thread
 from pydantic import ValidationError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CLOUD_ROOT = PROJECT_ROOT / "cloud"
+CLOUD_ROOT = PROJECT_ROOT / "cloud" / "shared"
 APP_VERSION = ".".join(("11", "7", "5", "205"))
 ROM_VERSION_6 = "CLS-AL30 " + ".".join(("6", "0", "0", "328"))
 ROM_VERSION_7 = "ALN-AL00 " + ".".join(("7", "1", "0", "100"))
 ROM_VERSION_7_WITHOUT_MODEL = ".".join(("7", "1", "0", "100"))
 REGISTRY_VERSION_6 = f"app-{APP_VERSION}_rom-6.0"
 REGISTRY_VERSION_7 = f"app-{APP_VERSION}_rom-7.1"
+
+
+def _require_blue_repository_paths(*relative_paths: str) -> Path:
+    repository_root = PROJECT_ROOT.parents[1]
+    missing_paths = [
+        relative_path
+        for relative_path in relative_paths
+        if not (repository_root / relative_path).exists()
+    ]
+    if missing_paths:
+        pytest.skip("蓝区仓库级同步源在当前区域不可用")
+    return repository_root
 
 if str(CLOUD_ROOT) not in sys.path:
     sys.path.insert(0, str(CLOUD_ROOT))
@@ -35,7 +47,7 @@ from api.schemas import (
     DataCapabilitySchemasRequest,
     GenerateWidgetCardRequest,
 )
-from api.routes import (
+from services.websocket_operation_runner import (
     _build_plugin_stream_response,
     _error_details,
     _error_explanation,
@@ -45,8 +57,8 @@ from api.routes import (
     _request_id_from_raw_payload,
 )
 from app.logger import json_for_log
-from config.config import Settings, get_settings
-from start_websocket_server import configure_anyio_thread_pool
+from runtime_settings import Settings, get_secret, get_settings
+from app.application import configure_anyio_thread_pool
 from models.artifact import ArtifactMeta, WidgetArtifact
 from models.capability import (
     AssetCapability,
@@ -106,7 +118,6 @@ from services.terse_dsl_nested2_converter import (
 )
 from services.validator import ArtifactValidator
 from services.widget_generation_service import WidgetGenerationService
-from utils.base_utils import sts_config
 from utils.download_file_from_url import download_file
 from utils.file import delete_file, save_txt_file
 from utils.upload_file_obs import UploadFileOSMS
@@ -275,16 +286,18 @@ async def test_terse_dsl_nested2_rejects_dynamic_requests():
     assert dynamic_response.errorCode == "PROTOCOL_CAPABILITY_UNSUPPORTED"
 
 
-def test_websocket_handler_runs_sync_service_in_threadpool():
+def test_websocket_runner_runs_sync_service_in_threadpool():
     """验证 WebSocket async 入口不会直接同步阻塞事件循环。
 
     入参：无。
     出参：无；通过源码断言防止回退为 `handler(service, request)` 直调。
     """
-    routes_source = (CLOUD_ROOT / "api" / "routes.py").read_text(encoding="utf-8")
-    assert "from starlette.concurrency import run_in_threadpool" in routes_source
-    assert "await run_in_threadpool(handler, service, request)" in routes_source
-    assert "result = handler(service, request)" not in routes_source
+    runner_source = (
+        CLOUD_ROOT / "services" / "websocket_operation_runner.py"
+    ).read_text(encoding="utf-8")
+    assert "from starlette.concurrency import run_in_threadpool" in runner_source
+    assert "await run_in_threadpool(handler, service, request)" in runner_source
+    assert "result = handler(service, request)" not in runner_source
 
 
 @pytest.mark.parametrize(
@@ -387,25 +400,27 @@ def test_anyio_thread_pool_uses_configured_capacity(monkeypatch):
     assert asyncio.run(configure_and_read_tokens()) == (80, 80)
 
 
-def test_llmclient_settings_are_complete_and_keep_previous_defaults():
-    settings = Settings(_env_file=None)
+def test_zone_adapter_supplies_llmclient_settings_without_shared_defaults():
+    shared_settings = Settings(_env_file=None)
+    settings = get_settings()
     options = LLMClientOptions()
 
-    assert settings.deepseek_api_key == "AccessService"
-    assert settings.deepseek_model == "deepseek-ai/DeepSeek-V4-Flash"
-    assert settings.deepseek_ws_url.endswith("/llm/websocket/openai/chat/completions")
-    assert settings.deepseek_user == "genui_user"
-    assert settings.deepseek_request_id == "genui_ui"
-    assert settings.deepseek_temperature == 0.7
-    assert settings.deepseek_top_p == 0.9
-    assert settings.deepseek_top_k == 1
-    assert settings.deepseek_max_tokens == 128_000
-    assert settings.deepseek_enable_thinking is False
-    assert settings.deepseek_include_usage is True
-    assert settings.deepseek_debug_usage is True
-    assert settings.deepseek_recv_timeout == 120
+    assert shared_settings.deepseek_api_key == ""
+    assert shared_settings.deepseek_model == ""
+    assert shared_settings.deepseek_ws_url == ""
     assert options.api_key == settings.deepseek_api_key
     assert options.model == settings.deepseek_model
+    assert options.ws_url == settings.deepseek_ws_url
+    assert options.user == settings.deepseek_user
+    assert options.request_id == settings.deepseek_request_id
+    assert options.temperature == settings.deepseek_temperature
+    assert options.top_p == settings.deepseek_top_p
+    assert options.top_k == settings.deepseek_top_k
+    assert options.max_tokens == settings.deepseek_max_tokens
+    assert options.enable_thinking == settings.deepseek_enable_thinking
+    assert options.include_usage == settings.deepseek_include_usage
+    assert options.debug_usage == settings.deepseek_debug_usage
+    assert options.recv_timeout == settings.deepseek_recv_timeout
     assert options.ws_url == settings.deepseek_ws_url
 
 
@@ -478,25 +493,29 @@ def test_prompt_log_summary_only_keeps_configured_system_prompt_prefix():
     assert build_prompt_log_summary(prompt, 0)["systemPromptPreview"] == ""
 
 
-def test_websocket_handler_sets_request_id_to_logger_context():
-    """验证三个 WebSocket 接口在进入业务流程前写入 requestId 日志上下文。
+def test_websocket_runner_sets_request_id_to_logger_context():
+    """验证 WebSocket Runner 在进入业务流程前写入 requestId 日志上下文。
 
     入参：无。
     出参：无；通过源码顺序断言保证首条请求日志及后续线程池日志都携带 requestId。
     """
-    routes_source = (CLOUD_ROOT / "api" / "routes.py").read_text(encoding="utf-8")
-    set_context_position = routes_source.index(
+    runner_source = (
+        CLOUD_ROOT / "services" / "websocket_operation_runner.py"
+    ).read_text(encoding="utf-8")
+    set_context_position = runner_source.index(
         'task_logger.set_session_id(request_id or "None")'
     )
-    raw_context_position = routes_source.index(
+    raw_context_position = runner_source.index(
         'task_logger.set_session_id(raw_request_id or "None")'
     )
-    raw_request_log_position = routes_source.index(
+    raw_request_log_position = runner_source.index(
         "widget_operation_ws_raw_request_received"
     )
-    request_log_position = routes_source.index("widget_operation_ws_payload_received")
+    request_log_position = runner_source.index(
+        "widget_operation_ws_payload_received"
+    )
 
-    assert "from app.logger import json_for_log, logger, task_logger" in routes_source
+    assert "from app.logger import json_for_log, logger, task_logger" in runner_source
     assert raw_context_position < raw_request_log_position
     assert set_context_position < request_log_position
 
@@ -699,15 +718,15 @@ def test_validation_failure_retry_can_be_enabled_by_environment(monkeypatch):
     assert settings.enable_validation_failure_retry is True
 
 
-def test_system_prompts_are_loaded_from_docs_files():
+def test_system_prompts_are_loaded_from_shared_prompt_files():
     """验证首次生成和编辑系统提示词均由配置文件读取。"""
     settings = Settings(_env_file=None)
 
     assert settings.resolved_system_prompt_file == (
-        PROJECT_ROOT.parent / "docs" / "system_prompt.txt"
+        CLOUD_ROOT / "prompts" / "system_prompt.txt"
     )
     assert settings.resolved_edit_system_prompt_file == (
-        PROJECT_ROOT.parent / "docs" / "edit_system_prompt.txt"
+        CLOUD_ROOT / "prompts" / "edit_system_prompt.txt"
     )
     assert "你是 A2UI 模型" in settings.system_prompt
     assert "编辑模式附加规则" in settings.edit_system_prompt
@@ -742,7 +761,7 @@ def test_ids_query_builds_structured_request_and_signature(monkeypatch):
         "services.ids_client.logger",
         type("CapturedLogger", (), {"info": staticmethod(log_messages.append)})(),
     )
-    secret_key = sts_config.get_sts_config("ids.secret.key")
+    secret_key = get_secret("ids.secret.key")
     request = client.build_installed_apps_query(_device(), "ids-unit-1")
     expected_digest = hmac.new(
         secret_key,
@@ -1494,7 +1513,10 @@ def _sample_data_from_schema(schema):
 
 def test_cloud_registry_covers_offline_skill_capability_inventory():
     """防止离线 Skill 新增能力后，云侧版本目录继续使用不完整的旧快照。"""
-    repository_root = PROJECT_ROOT.parent
+    repository_root = _require_blue_repository_paths(
+        "skills/harmony-card-generation-offline/reference",
+        "resources/base/media",
+    )
     offline_reference = (
         repository_root
         / "skills"
@@ -1582,8 +1604,11 @@ def test_cloud_registry_covers_offline_skill_capability_inventory():
 
 
 def test_cloud_asset_registry_matches_online_skill_allowlist():
+    repository_root = _require_blue_repository_paths(
+        "skills/harmony-card-generation-online/scripts/rules/config/asset.json"
+    )
     skill_asset_path = (
-        PROJECT_ROOT.parent
+        repository_root
         / "skills"
         / "harmony-card-generation-online"
         / "scripts"
@@ -4261,7 +4286,9 @@ def test_card_validation_loads_latest_online_rule_snapshot():
 
 
 def test_card_validation_snapshot_covers_all_online_runtime_files():
-    repository_root = PROJECT_ROOT.parent
+    repository_root = _require_blue_repository_paths(
+        "skills/harmony-card-generation-online/scripts"
+    )
     skill_scripts = (
         repository_root / "skills" / "harmony-card-generation-online" / "scripts"
     )

@@ -23,7 +23,7 @@ from services.compact_dsl_protocol import (
 class CompactDslFormParityTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.root = Path(__file__).resolve().parents[1] / "cloud"
+        cls.root = Path(__file__).resolve().parents[1] / "cloud" / "shared"
         profile_root = cls.root / "data" / "protocol_profiles" / "compact-dsl-v1"
         cls.documents = {}
         for name in (

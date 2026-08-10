@@ -2,6 +2,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 # ruff: noqa: E402
 import asyncio
+import importlib
 import json
 import os
 import socket
@@ -12,9 +13,19 @@ import pytest
 import websockets
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CLOUD_ROOT = PROJECT_ROOT / "cloud"
-if str(CLOUD_ROOT) not in sys.path:
-    sys.path.insert(0, str(CLOUD_ROOT))
+CLOUD_CONTAINER_ROOT = PROJECT_ROOT / "cloud"
+CLOUD_ROOT = CLOUD_CONTAINER_ROOT / "shared"
+sys.pycache_prefix = str(CLOUD_CONTAINER_ROOT / "zone" / "runtime" / "pycache")
+for import_root in (CLOUD_ROOT, PROJECT_ROOT):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
+
+runtime_settings = importlib.import_module("runtime_settings")
+zone_config = importlib.import_module("cloud.zone.config")
+runtime_settings.install_runtime_providers(
+    zone_config.create_settings,
+    zone_config.read_secret,
+)
 
 from services.card_validation import ValidationOptions, validate_card
 from services.source_artifact_repository import SourceArtifactRepository
@@ -157,7 +168,7 @@ async def _call_ws(path_name: str, payload: dict, expected_request_id: str) -> d
     except OSError as exc:
         reason = (
             "本测试需要先启动本地 WebSocket 服务："
-            "cd widget_service && py -3.12 cloud\\start_websocket_server.py；"
+            "cd widget_service && py -3.12 -m cloud.start_websocket_server；"
             f"当前探测地址：{uri}；"
             f"连接错误：{type(exc).__name__}: {exc}"
         )

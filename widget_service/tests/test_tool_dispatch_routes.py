@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from ws_response_parser import parse_legacy_stream_content
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CLOUD_ROOT = PROJECT_ROOT / "cloud"
+CLOUD_ROOT = PROJECT_ROOT / "cloud" / "shared"
 REPORT_DIR = PROJECT_ROOT / "test_reports"
 SESSION_ID = "7676c2c8-a6d3-413c-8074-c62ed30db8de"
 DEVICE_ODID = "5e64f3e9-0a80-d719-d689-3c36eca5eeb6"
@@ -39,7 +39,7 @@ REPORT_TIMESTAMPS = {
 if str(CLOUD_ROOT) not in sys.path:
     sys.path.insert(0, str(CLOUD_ROOT))
 
-app = importlib.import_module("start_websocket_server").app
+app = importlib.import_module("app.application").app
 A2UIModelClient = importlib.import_module("custom.a2ui_model_client").A2UIModelClient
 A2UIModelGenerationError = importlib.import_module(
     "custom.a2ui_model_client"
@@ -55,8 +55,8 @@ IDSDeviceCapabilityState = importlib.import_module(
 ).IDSDeviceCapabilityState
 ArtifactSaveResult = importlib.import_module("models.service").ArtifactSaveResult
 ArtifactStore = importlib.import_module("services.artifact_store").ArtifactStore
-Settings = importlib.import_module("config.config").Settings
-get_settings = importlib.import_module("config.config").get_settings
+Settings = importlib.import_module("runtime_settings").Settings
+get_settings = importlib.import_module("runtime_settings").get_settings
 WidgetGenerationService = importlib.import_module(
     "services.widget_generation_service"
 ).WidgetGenerationService
@@ -163,7 +163,7 @@ def _command_content(frame: dict) -> dict:
 
 def test_websocket_send_disconnect_is_logged_and_not_raised(monkeypatch):
     """验证客户端断开后不再二次发送响应，异常仍按 ERROR 记录。"""
-    routes_module = importlib.import_module("api.routes")
+    runner_module = importlib.import_module("services.websocket_operation_runner")
     error_messages: list[str] = []
 
     class CapturedLogger:
@@ -172,11 +172,11 @@ def test_websocket_send_disconnect_is_logged_and_not_raised(monkeypatch):
 
     class DisconnectedWebSocket:
         async def send_json(self, _payload):
-            raise routes_module.WebSocketDisconnect(code=1006)
+            raise runner_module.WebSocketDisconnect(code=1006)
 
-    monkeypatch.setattr(routes_module, "logger", CapturedLogger())
+    monkeypatch.setattr(runner_module, "logger", CapturedLogger())
     sent = asyncio.run(
-        routes_module._send_websocket_json(
+        runner_module._send_websocket_json(
             DisconnectedWebSocket(),
             {"frame": "final"},
             "getWidgetCapabilityOverview",
@@ -666,7 +666,11 @@ def test_overview_logs_do_not_include_user_or_device_identifiers(monkeypatch):
         error = _capture
 
     captured_logger = CapturedLogger()
-    monkeypatch.setattr(importlib.import_module("api.routes"), "logger", captured_logger)
+    monkeypatch.setattr(
+        importlib.import_module("services.websocket_operation_runner"),
+        "logger",
+        captured_logger,
+    )
     monkeypatch.setattr(
         importlib.import_module("services.widget_generation_service"),
         "logger",

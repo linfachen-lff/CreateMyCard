@@ -38,11 +38,11 @@ from ws_response_parser import parse_legacy_stream_content
 # ---------------------------------------------------------------------------
 # 路径与配置
 # ---------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parents[0]
+SHARED_ROOT = Path(__file__).resolve().parents[1]
 CLOUD_ROOT = (
     Path(os.getenv("WIDGET_SERVICE_CLOUD_ROOT", ""))
     if os.getenv("WIDGET_SERVICE_CLOUD_ROOT")
-    else PROJECT_ROOT / "widget_service" / "cloud"
+    else SHARED_ROOT / "cloud" / "shared"
 )
 if str(CLOUD_ROOT) not in sys.path and CLOUD_ROOT.exists():
     sys.path.insert(0, str(CLOUD_ROOT))

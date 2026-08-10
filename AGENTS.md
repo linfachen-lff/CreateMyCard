@@ -18,7 +18,7 @@
 - 单行代码不得超过 120 个字符；新增或同步代码后必须重新检查。
 - `if`、`while` 等条件控制语句最多包含 3 个布尔表达式。超过时先拆成有语义的中间变量、状态元组或独立辅助方法，再由控制语句使用结果。
 - 遵守 `G.FMT.04`。避免产生冒号前空格告警；已经确认字符串具有目标前缀时，优先使用 `removeprefix()`，不要使用会被格式化为 `value[index :]` 的计算切片。
-- 从 Skill 批量同步 `widget_service/cloud/services/card_validation/` 后，不得直接以覆盖后的源码作为最终结果。必须重新执行 CodeCheck，并恢复微服务侧为满足上述规则所做的等价改写。
+- 从 Skill 批量同步 `widget_service/cloud/shared/services/card_validation/` 后，不得直接以覆盖后的源码作为最终结果。必须重新执行 CodeCheck，并恢复微服务侧为满足上述规则所做的等价改写。
 - 当前校验器需要重点复查：`binding_validator.py` 的前缀截取、`component_validator.py` 的模板变量判断、`protocol_validator.py` 的入口状态判断，以及 `source_parser.py` 的表达式标记判断。
 - 遵守 `G.VAR.01`。带类型标注的变量和数据类字段应使用同类型初始值，例如 `float` 字段使用
   `0.0`，避免在生命周期内由 `int` 隐式变为 `float`。
