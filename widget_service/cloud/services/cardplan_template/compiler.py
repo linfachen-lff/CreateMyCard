@@ -2097,23 +2097,6 @@ def _battery_weather_support_overview(
     registry: CardPlanRegistry,
 ) -> Nested2Node:
     summary_children: list[Nested2Node] = []
-    if isinstance(battery_icon, str):
-        summary_children.append(
-            Nested2Node(
-                "Image",
-                (
-                    battery_icon,
-                    "icon",
-                    {
-                        "width": 14,
-                        "height": 14,
-                        "objectFit": "contain",
-                        "flexShrink": 0,
-                    },
-                ),
-                (),
-            )
-        )
     summary_children.extend(
         (
             _overview_text(
@@ -2685,7 +2668,7 @@ def _bluetooth_device_support_overview(
                 "padding": 0 if compact else {"left": 8, "top": 6, "right": 8, "bottom": 6},
                 "borderRadius": 0 if compact else 8,
                 "backgroundColor": "#00000000" if compact else "#1A64BB5C",
-                "itemMargin": 2 if compact else registry.ux_tokens["denseInnerGap"],
+                "itemMargin": 4 if compact else registry.ux_tokens["denseInnerGap"],
                 "justifyContent": "center" if compact else "start",
                 "alignItems": "center" if compact else "start",
                 "clip": True,
@@ -4081,6 +4064,8 @@ def _expand_weather_overview_call(
             ),
             (top, bottom),
         )
+    compact_weather_gap = 4 if task_spec.size == "2x2" and layout_id in {"HeroSupportLayout", "HeroSupportActionLayout"} else 2 if compact else registry.ux_tokens["denseInnerGap"]
+    compact_weather_temperature = _weather_temperature_without_c(facts.temperature) if task_spec.size == "2x2" and layout_id in {"HeroSupportLayout", "HeroSupportActionLayout"} else facts.temperature
     return Nested2Node(
         "Column",
         (
@@ -4089,7 +4074,7 @@ def _expand_weather_overview_call(
                 "_advancedComponent": "WeatherOverview",
                 "width": "matchParent",
                 "height": "matchParent",
-                "itemMargin": 2 if compact else registry.ux_tokens["denseInnerGap"],
+                "itemMargin": compact_weather_gap,
                 "justifyContent": "start",
                 "alignItems": "start",
                 "clip": True,
@@ -4099,7 +4084,7 @@ def _expand_weather_overview_call(
         (
             title,
             _weather_text(
-                facts.temperature,
+                compact_weather_temperature,
                 "title",
                 font_size=temperature_size,
                 font_weight=800,
@@ -4114,6 +4099,11 @@ def _expand_weather_overview_call(
             ),
         ),
     )
+
+
+def _weather_temperature_without_c(value: str) -> str:
+    """Remove the Celsius suffix from the compact weather temperature label."""
+    return value[:-1] if value.endswith("C") else value
 
 
 def _weather_icon_is_sun(
