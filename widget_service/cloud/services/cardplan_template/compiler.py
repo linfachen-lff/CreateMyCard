@@ -2339,7 +2339,7 @@ def _battery_peer_overview(
                 "width": "matchParent",
                 "height": "matchParent",
                 "itemMargin": 2,
-                "justifyContent": "center",
+                "justifyContent": "end",
                 "alignItems": "center",
                 "clip": True,
                 "constraintSize": {"minWidth": 0, "minHeight": 0},
@@ -2405,7 +2405,7 @@ def _battery_ring(
         )
     ]
     if isinstance(battery_icon, str):
-        icon_size = registry.ux_tokens["ringHeroIconSize"]
+        icon_size = 20
         children.append(
             Nested2Node(
                 "Image",
@@ -3169,7 +3169,7 @@ def _expand_resource_usage_overview_call(
         facts,
         ring_size=ring_size,
         icon=icon,
-        show_center_percent=not isinstance(icon, str),
+        show_center_percent=False,
     )
     if role == "peer":
         children: list[Nested2Node] = []
@@ -3183,15 +3183,14 @@ def _expand_resource_usage_overview_call(
                 )
             )
         children.append(ring)
-        if isinstance(icon, str):
-            children.append(
-                _resource_usage_percent_row(
-                    facts,
-                    font_size=14,
-                    width="matchParent",
-                    justify_content="center",
-                )
+        children.append(
+            _resource_usage_percent_row(
+                facts,
+                font_size=14,
+                width="matchParent",
+                justify_content="center",
             )
+        )
         children.extend(
             (
                 _resource_usage_text(
@@ -3221,7 +3220,7 @@ def _expand_resource_usage_overview_call(
                     "width": "matchParent",
                     "height": "matchParent",
                     "itemMargin": 2,
-                    "justifyContent": "center",
+                    "justifyContent": "end",
                     "alignItems": "center",
                     "clip": True,
                     "constraintSize": {"minWidth": 0, "minHeight": 0},
@@ -3332,8 +3331,8 @@ def _resource_usage_ring(
                     icon,
                     "icon",
                     {
-                        "width": 24,
-                        "height": 24,
+                        "width": 20,
+                        "height": 20,
                         "objectFit": "contain",
                         "fillColor": _ICON_SECONDARY,
                     },
@@ -3437,7 +3436,7 @@ def _resource_usage_capacity_column(facts: ResourceUsageOverviewFacts) -> Nested
             {
                 "width": "matchParent",
                 "itemMargin": 2,
-                "justifyContent": "center",
+                "justifyContent": "end",
                 "alignItems": "center",
                 "constraintSize": {"minWidth": 0, "minHeight": 0},
             },
@@ -7477,8 +7476,8 @@ def _lower_pill_action(
                     icon,
                     "icon",
                     {
-                        "width": icon_size,
-                        "height": icon_size,
+                        "width": 20,
+                        "height": 20,
                         "objectFit": "contain",
                         "fillColor": foreground,
                     },
