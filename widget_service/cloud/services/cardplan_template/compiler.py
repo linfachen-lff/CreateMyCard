@@ -2218,6 +2218,7 @@ def _battery_compact_overview(
                 "body",
                 12,
                 400,
+                font_color="#99000000",
                 max_lines=2,
             ),
             bottom_region,
@@ -2506,6 +2507,7 @@ def _battery_text(
     font_size: int,
     font_weight: int,
     *,
+    font_color: str | None = None,
     max_lines: int = 1,
     text_align: str | None = None,
 ) -> Nested2Node:
@@ -2513,7 +2515,7 @@ def _battery_text(
         "width": "matchParent",
         "fontSize": font_size,
         "fontWeight": font_weight,
-        "fontColor": "#E6000000" if font_size >= 12 else "#99000000",
+        "fontColor": font_color or ("#E6000000" if font_size >= 12 else "#99000000"),
         "maxLines": max_lines,
         "textOverflow": "ellipsis",
         "constraintSize": {"minWidth": 0, "minHeight": 0},
@@ -3463,6 +3465,8 @@ def _resource_usage_text(
     *,
     font_size: int,
     font_weight: int,
+    font_color: str | None = None,
+    height: int | None = None,
     fill_width: bool = False,
     text_align: str | None = None,
 ) -> Nested2Node:
@@ -3474,6 +3478,10 @@ def _resource_usage_text(
         "textOverflow": "ellipsis",
         "constraintSize": {"minWidth": 0, "minHeight": 0},
     }
+    if font_color is not None:
+        options["fontColor"] = font_color
+    if height is not None:
+        options["height"] = height
     if fill_width:
         options["width"] = "matchParent"
     if text_align is not None:
@@ -6176,7 +6184,9 @@ def _inject_resource_battery_title(
         title,
         "compact-title",
         font_size=12,
-        font_weight=600,
+        font_weight=400,
+        font_color="font_secondary",
+        height=12,
     )
     body = _with_flex_weight(node, 1, axis="vertical")
     return Nested2Node(
