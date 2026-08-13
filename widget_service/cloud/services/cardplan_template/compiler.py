@@ -3154,7 +3154,7 @@ def _expand_resource_usage_overview_call(
         facts,
         ring_size=ring_size,
         icon=icon,
-        show_center_percent=False,
+        show_center_percent=not isinstance(icon, str),
     )
     if role == "peer":
         children: list[Nested2Node] = []
