@@ -6176,7 +6176,7 @@ def _inject_resource_battery_title(
         "compact-title",
         font_size=12,
         font_weight=400,
-        font_color="font_secondary",
+        font_color="#99182431",
         height=12,
     )
     body = _with_flex_weight(node, 1, axis="vertical")
