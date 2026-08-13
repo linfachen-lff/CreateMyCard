@@ -1194,7 +1194,7 @@ def _activity_hero_overview(
     wide: bool,
     include_summary: bool,
 ) -> Nested2Node:
-    header = _overview_header("今日活动", icons["stepsIcon"], registry)
+    header = _overview_header("今日活动", icons["stepsIcon"], registry, activity=True)
     metric = _overview_value_row(
         str(facts.daily_steps),
         "步",
@@ -1286,7 +1286,7 @@ def _activity_support_overview(
             },
         ),
         (
-            _overview_header("今日步数", icons["stepsIcon"], registry, compact=True),
+            _overview_header("今日步数", icons["stepsIcon"], registry, compact=True, activity=True),
             _overview_value_row(
                 str(facts.daily_steps),
                 "步",
@@ -1872,10 +1872,11 @@ def _overview_header(
     registry: CardPlanRegistry,
     *,
     compact: bool = False,
+    activity: bool = False,
 ) -> Nested2Node:
     children: list[Nested2Node] = []
     if isinstance(icon, str):
-        size = 16 if compact else registry.ux_tokens["businessIconSize"]
+        size = 20 if activity else (16 if compact else registry.ux_tokens["businessIconSize"])
         children.append(
             Nested2Node(
                 "Image",
@@ -1892,14 +1893,15 @@ def _overview_header(
                 (),
             )
         )
-    children.append(_overview_text(title, "subtitle", 10 if compact else 12, 500))
+    children.append(_overview_text(title, "caption-l" if activity else "subtitle", 12 if activity else (10 if compact else 12), 400 if activity else 500))
     return Nested2Node(
         "Row",
         (
             "between",
             {
                 "width": "matchParent",
-                "itemMargin": registry.ux_tokens["denseInnerGap"],
+                "itemMargin": 12 if activity else registry.ux_tokens["denseInnerGap"],
+                "height": 20 if activity else "auto",
                 "justifyContent": "start",
                 "alignItems": "top",
                 "constraintSize": {"minWidth": 0, "minHeight": 0},
