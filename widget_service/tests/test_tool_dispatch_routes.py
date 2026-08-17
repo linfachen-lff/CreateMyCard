@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from ws_response_parser import parse_legacy_stream_content
 
@@ -51,9 +52,7 @@ DeepSeekPlatformClient = importlib.import_module(
 task_logger = importlib.import_module("app.logger").task_logger
 DeviceContext = importlib.import_module("models.generation").DeviceContext
 IDSClient = importlib.import_module("services.ids_client").IDSClient
-IDSDeviceCapabilityState = importlib.import_module(
-    "services.ids_client"
-).IDSDeviceCapabilityState
+IDSDeviceCapabilityState = importlib.import_module("services.ids_client").IDSDeviceCapabilityState
 ArtifactSaveResult = importlib.import_module("models.service").ArtifactSaveResult
 ArtifactStore = importlib.import_module("services.artifact_store").ArtifactStore
 Settings = importlib.import_module("config.config").Settings
@@ -61,6 +60,51 @@ get_settings = importlib.import_module("config.config").get_settings
 WidgetGenerationService = importlib.import_module(
     "services.widget_generation_service"
 ).WidgetGenerationService
+AdvancedComponentPipeline = importlib.import_module(
+    "services.advanced_component_pipeline"
+).AdvancedComponentPipeline
+advanced_models = importlib.import_module("services.advanced_component_pipeline.models")
+AdvancedPipelineOutput = advanced_models.AdvancedPipelineOutput
+AdvancedScopeBrief = advanced_models.AdvancedScopeBrief
+A2UIProtocolRegistry = importlib.import_module("services.protocol_registry").A2UIProtocolRegistry
+TERSE_DSL_NESTED2_PROFILE_ID = importlib.import_module(
+    "services.protocol_registry"
+).TERSE_DSL_NESTED2_PROFILE_ID
+convert_terse_dsl_nested2_to_a2ui = importlib.import_module(
+    "services.terse_dsl_nested2_converter"
+).convert_terse_dsl_nested2_to_a2ui
+
+
+async def _valid_mixed_output(_pipeline, task_spec, _client, *_args, **_kwargs):
+    source = f'Column("card", Text({json.dumps(task_spec.userQuery)}, "title"));'
+    compiled = convert_terse_dsl_nested2_to_a2ui(
+        source,
+        size=task_spec.size,
+        protocol_profile=A2UIProtocolRegistry.read_design_protocol_profile(
+            TERSE_DSL_NESTED2_PROFILE_ID
+        ),
+    )
+    return AdvancedPipelineOutput(
+        component_id="ux-advanced-component-mixed",
+        style_id="family-weather-care-blue",
+        source_dsl=source,
+        source_format="a2ui",
+        ui_brief=AdvancedScopeBrief(
+            themeId="family-weather-care-blue",
+            advancedComponentIds=("WeatherOverview",),
+        ),
+        invocation={},
+        planner_mode="llm",
+        mapper_mode="llm",
+        route="hybrid-template",
+        confidence_bypassed=True,
+        raw_output=(
+            'Template("card@1", {}, '
+            f'SingleFocusLayout(Text({json.dumps(task_spec.userQuery)}, "title")));'
+        ),
+        effective_output=source,
+        compiled_a2ui=compiled,
+    )
 
 
 def _tool_payload(
@@ -255,8 +299,7 @@ def _valid_model_output(_self, _prompt, protocol_profile: dict) -> str:
             ["/ui/state", "ready"],
         ]
         return "\n".join(
-            json.dumps(row, ensure_ascii=False, separators=(",", ":"))
-            for row in compact_rows
+            json.dumps(row, ensure_ascii=False, separators=(",", ":")) for row in compact_rows
         )
 
     rows = [
@@ -264,7 +307,7 @@ def _valid_model_output(_self, _prompt, protocol_profile: dict) -> str:
             "version": "v0.9",
             "createSurface": {
                 "surfaceId": "card",
-                "catalogId": "ohos.a2ui.extended.catalog.form",
+                "catalogId": "ohos.a2ui.extended.catalog",
                 "width": 300,
                 "height": 140,
             },
@@ -309,9 +352,7 @@ def _valid_model_output(_self, _prompt, protocol_profile: dict) -> str:
             },
         },
     ]
-    return "\n".join(
-        json.dumps(row, ensure_ascii=False, separators=(",", ":")) for row in rows
-    )
+    return "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":")) for row in rows)
 
 
 def _json_block(payload: dict) -> str:
@@ -531,13 +572,14 @@ def test_widget_card_service_complete_flow(monkeypatch):
         assert [item["id"] for item in schema["dataCapabilities"]] == ["ViewWeather"]
         weather_schema = schema["dataCapabilities"][0]
         assert "districtName" in weather_schema["inputSchema"]["properties"]
-        assert weather_schema["outputSchema"]["properties"]["current"]["properties"][
-            "condition"
-        ]["sampleValue"] == "多云"
-        assert weather_schema["dependencies"] == {
-            "requiredPackages": [
-                {"packageName": "com.huawei.hmos.weather"}
+        assert (
+            weather_schema["outputSchema"]["properties"]["current"]["properties"]["condition"][
+                "sampleValue"
             ]
+            == "多云"
+        )
+        assert weather_schema["dependencies"] == {
+            "requiredPackages": [{"packageName": "com.huawei.hmos.weather"}]
         }
         assert schema["missingCapabilityIds"] == []
         records.append(
@@ -631,8 +673,10 @@ def test_widget_card_service_complete_flow(monkeypatch):
                 "id": "asset.drop_1",
                 "src": "resources/base/media/drop_1.svg",
                 "description": (
-                    "水滴图标，黑色，图形为圆润水滴轮廓，适用场景：湿度数据展示、饮水提醒、天气降雨信息"
+                    "样式：水滴图标，默认黑色，图形为圆润水滴轮廓；"
+                    "适用：湿度数据展示、饮水提醒、天气降雨信息。"
                 ),
+                "sceneTags": ["weather", "water"],
             }
         ]
         card_binding = saved_artifacts[0]["cardSpec"]["dataBindings"][0]
@@ -661,9 +705,7 @@ def test_overview_interface_filters_health_dependencies(monkeypatch):
         ),
     )
     client = TestClient(app)
-    with client.websocket_connect(
-        "/api/v1/ws/tools/getWidgetCapabilityOverview"
-    ) as websocket:
+    with client.websocket_connect("/api/v1/ws/tools/getWidgetCapabilityOverview") as websocket:
         websocket.send_json(
             _tool_payload(
                 {},
@@ -679,9 +721,7 @@ def test_overview_interface_filters_health_dependencies(monkeypatch):
     data = message["data"]
     assert "ViewWeather" in {item["id"] for item in data["dataCapabilities"]}
     assert "GetCalendarEvents" in {item["id"] for item in data["dataCapabilities"]}
-    assert "GetHealthAndSportSummary" not in {
-        item["id"] for item in data["dataCapabilities"]
-    }
+    assert "GetHealthAndSportSummary" not in {item["id"] for item in data["dataCapabilities"]}
     assert set(data["unavailableCapabilities"]) == {
         "GetHealthAndSportSummary",
         "event.open.health.sport",
@@ -718,14 +758,10 @@ def test_overview_logs_do_not_include_user_or_device_identifiers(monkeypatch):
     )
     request = _tool_payload({}, "overview-log-uid")
     request["userAuth"]["user"]["userId"] = sentinel_uid
-    request["content"]["sourceArtifactUrl"] = (
-        "https://obs.test/widget/source-artifact.md"
-    )
+    request["content"]["sourceArtifactUrl"] = "https://obs.test/widget/source-artifact.md"
 
     client = TestClient(app)
-    with client.websocket_connect(
-        "/api/v1/ws/tools/getWidgetCapabilityOverview"
-    ) as websocket:
+    with client.websocket_connect("/api/v1/ws/tools/getWidgetCapabilityOverview") as websocket:
         websocket.send_json(request)
         _assert_success_envelope(
             _receive_final_frame(websocket, _request_id("overview-log-uid")),
@@ -734,20 +770,16 @@ def test_overview_logs_do_not_include_user_or_device_identifiers(monkeypatch):
         )
 
     assert any("widget_operation_ws_payload_received" in item for item in log_messages)
-    assert any(
-        "payload_keys=" in item and '"content"' in item for item in log_messages
-    )
+    assert any("payload_keys=" in item and '"content"' in item for item in log_messages)
     raw_request_log = next(
-        item
-        for item in log_messages
-        if "widget_operation_ws_raw_request_received" in item
+        item for item in log_messages if "widget_operation_ws_raw_request_received" in item
     )
     logged_request = json.loads(raw_request_log.split("request_body=", 1)[1])
     assert logged_request["deviceInfo"]["romVersion"] == ROM_VERSION
     assert logged_request["bundleName"] == request["bundleName"]
     assert "odid" not in logged_request["content"]
-    assert logged_request["content"]["sourceArtifactUrl"] == (
-        request["content"]["sourceArtifactUrl"]
+    assert (
+        logged_request["content"]["sourceArtifactUrl"] == (request["content"]["sourceArtifactUrl"])
     )
     assert "userId" not in logged_request["userAuth"]["user"]
     assert any("capability_overview_started" in item for item in log_messages)
@@ -760,9 +792,7 @@ def test_overview_logs_do_not_include_user_or_device_identifiers(monkeypatch):
 def test_overview_interface_does_not_filter_assets_by_app_version():
     client = TestClient(app)
     device_info = {**DEVICE_INFO, "prdVer": "0.9.0"}
-    with client.websocket_connect(
-        "/api/v1/ws/tools/getWidgetCapabilityOverview"
-    ) as websocket:
+    with client.websocket_connect("/api/v1/ws/tools/getWidgetCapabilityOverview") as websocket:
         websocket.send_json(
             _tool_payload(
                 {
@@ -848,9 +878,7 @@ def test_generation_routes_lock_and_isolate_protocol_profiles(monkeypatch):
     assert "updateComponents" in a2ui_rows[1]
     assert "updateDataModel" in a2ui_rows[2]
 
-    with client.websocket_connect(
-        "/api/v1/ws/tools/generateWidgetCardCompactDsl"
-    ) as websocket:
+    with client.websocket_connect("/api/v1/ws/tools/generateWidgetCardCompactDsl") as websocket:
         compact_content = {
             **generation_content,
             "protocolProfileId": "a2ui-form-rom6.0-v1",
@@ -870,13 +898,9 @@ def test_generation_routes_lock_and_isolate_protocol_profiles(monkeypatch):
 
     assert "artifact" not in compact_message["data"]
     compact_artifact = saved_artifacts[1]
-    compact_rows = [
-        json.loads(line) for line in compact_artifact["genui"].splitlines()
-    ]
+    compact_rows = [json.loads(line) for line in compact_artifact["genui"].splitlines()]
     assert compact_artifact["meta"]["protocolProfileId"] == "a2ui-form-rom6.0-v1"
-    assert saved_design_compact_dsls[1].startswith(
-        '["root","Column"'
-    )
+    assert saved_design_compact_dsls[1].startswith('["root","Column"')
     assert saved_design_compact_dsls[1] != compact_artifact["genui"]
     assert [next(iter(row)) for row in compact_rows] == ["version", "version", "version"]
     assert "createSurface" in compact_rows[0]
@@ -893,13 +917,18 @@ def test_generation_routes_lock_and_isolate_protocol_profiles(monkeypatch):
     assert model_calls[1]["prompt"][0]["content"] == design_prompt
 
 
-def test_websocket_request_context_reaches_deepseek_platform(monkeypatch):
+def test_websocket_request_context_reaches_deepseek_platform(monkeypatch, tmp_path):
     """验证真实 WebSocket 生成链路会把组合 requestId 传入模型日志上下文。"""
     settings = get_settings()
     monkeypatch.setattr(settings, "enable_a2ui_model_mock", False)
     monkeypatch.setattr(settings, "design_compact_model_backend", "openai")
     monkeypatch.setattr(settings, "openai_master_client", "deepseek_platform")
     monkeypatch.setattr(settings, "enable_model_failure_retry", False)
+    monkeypatch.setattr(
+        settings,
+        "deepseek_call_budget_path",
+        str(tmp_path / "deepseek-context-budget.sqlite3"),
+    )
     captured: dict[str, str | None] = {}
 
     async def capture_deepseek_context(_client, _messages, request_context):
@@ -933,9 +962,7 @@ def test_websocket_request_context_reaches_deepseek_platform(monkeypatch):
     }
 
     client = TestClient(app)
-    with client.websocket_connect(
-        "/api/v1/ws/tools/generateWidgetCardCompactDsl"
-    ) as websocket:
+    with client.websocket_connect("/api/v1/ws/tools/generateWidgetCardCompactDsl") as websocket:
         websocket.send_json(_tool_payload(content, interaction_id))
         message = _assert_success_envelope(
             _receive_final_frame(websocket, request_id),
@@ -966,9 +993,7 @@ def test_compact_route_mock_converts_design_dsl_before_saving(monkeypatch):
     monkeypatch.setattr(ArtifactStore, "save", capture_artifact)
     client = TestClient(app)
     request_id = _request_id("design-mock")
-    with client.websocket_connect(
-        "/api/v1/ws/tools/generateWidgetCardCompactDsl"
-    ) as websocket:
+    with client.websocket_connect("/api/v1/ws/tools/generateWidgetCardCompactDsl") as websocket:
         websocket.send_json(
             _tool_payload(
                 {
@@ -1003,6 +1028,7 @@ def test_compact_route_mock_converts_design_dsl_before_saving(monkeypatch):
 def test_terse_nested2_route_mock_converts_local_dsl_before_saving(monkeypatch):
     """验证第五接口使用本地 prompt、mock 和 DSL 转换器保存标准 A2UI。"""
     monkeypatch.setattr(get_settings(), "enable_a2ui_model_mock", True)
+    monkeypatch.setattr(AdvancedComponentPipeline, "generate_mixed", _valid_mixed_output)
     saved_artifacts = []
 
     def capture_artifact(_store, artifact):
@@ -1053,6 +1079,7 @@ def test_generation_routes_send_start_and_success_commands(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "enable_widget_directive_commands", True)
     monkeypatch.setattr(A2UIModelClient, "generate", _valid_model_output)
+    monkeypatch.setattr(AdvancedComponentPipeline, "generate_mixed", _valid_mixed_output)
 
     def capture_artifact(_store, _artifact):
         return ArtifactSaveResult(
@@ -1151,9 +1178,7 @@ def test_temporary_compact_route_forces_directives_without_global_switch(monkeyp
     standard_interaction_id = "directive-standard-disabled"
     temporary_interaction_id = "directive-temporary-forced"
 
-    with client.websocket_connect(
-        "/api/v1/ws/tools/generateWidgetCardCompactDsl"
-    ) as websocket:
+    with client.websocket_connect("/api/v1/ws/tools/generateWidgetCardCompactDsl") as websocket:
         websocket.send_json(_tool_payload(content, standard_interaction_id))
         standard_frames = _receive_frames_until_final(
             websocket,
@@ -1161,9 +1186,7 @@ def test_temporary_compact_route_forces_directives_without_global_switch(monkeyp
         )
 
     temporary_operation = "generateWidgetCardCompactDslWithDirective"
-    with client.websocket_connect(
-        f"/api/v1/ws/tools/{temporary_operation}"
-    ) as websocket:
+    with client.websocket_connect(f"/api/v1/ws/tools/{temporary_operation}") as websocket:
         websocket.send_json(_tool_payload(content, temporary_interaction_id))
         temporary_frames = _receive_frames_until_final(
             websocket,
@@ -1171,9 +1194,7 @@ def test_temporary_compact_route_forces_directives_without_global_switch(monkeyp
         )
 
     standard_types = [item["reply"]["streamInfo"]["streamType"] for item in standard_frames]
-    temporary_types = [
-        item["reply"]["streamInfo"]["streamType"] for item in temporary_frames
-    ]
+    temporary_types = [item["reply"]["streamInfo"]["streamType"] for item in temporary_frames]
     assert standard_types == ["start", "final"]
     assert temporary_types == ["start", "command", "command", "final"]
     temporary_start = _command_content(temporary_frames[1])
@@ -1313,9 +1334,7 @@ def test_unknown_prd_version_falls_back_for_first_two_interfaces():
                 device_info=device_info,
             )
         )
-        overview_message = _receive_final_frame(
-            websocket, _request_id("missing-overview")
-        )
+        overview_message = _receive_final_frame(websocket, _request_id("missing-overview"))
 
         overview_legacy_message = _assert_success_envelope(
             overview_message,
@@ -1379,9 +1398,7 @@ def test_invalid_arguments_keep_plugin_envelope_successful():
     stream_info = response["reply"]["streamInfo"]
     assert stream_info["streamingTextId"] == request_id
     assert stream_info["streamType"] == "final"
-    legacy_message = parse_legacy_stream_content(
-        stream_info["streamContent"]
-    )
+    legacy_message = parse_legacy_stream_content(stream_info["streamContent"])
     assert legacy_message["type"] == "error"
     assert legacy_message["errorCode"] == "INVALID_ARGUMENTS"
     assert legacy_message["explanation"].startswith("工具参数传入有误")
@@ -1399,9 +1416,7 @@ def test_malformed_json_keeps_plugin_envelope_successful():
     assert response["errorCode"] == "0"
     assert response["errorMessage"] == ""
     assert response["reply"]["items"] == []
-    legacy_message = parse_legacy_stream_content(
-        response["reply"]["streamInfo"]["streamContent"]
-    )
+    legacy_message = parse_legacy_stream_content(response["reply"]["streamInfo"]["streamContent"])
     assert legacy_message["type"] == "error"
     assert legacy_message["requestId"] is None
     assert legacy_message["errorCode"] == "INVALID_ARGUMENTS"
@@ -1424,6 +1439,7 @@ def test_generation_malformed_json_does_not_end_before_start(monkeypatch):
 
 def test_handler_exception_keeps_plugin_envelope_successful(monkeypatch):
     """服务执行异常保留插件顶层成功，并在旧消息中返回 FAILED。"""
+
     def fail_overview(_service, _request):
         raise RuntimeError("overview failed")
 
@@ -1440,9 +1456,7 @@ def test_handler_exception_keeps_plugin_envelope_successful(monkeypatch):
 
     assert response["errorCode"] == "0"
     assert response["errorMessage"] == ""
-    legacy_message = parse_legacy_stream_content(
-        response["reply"]["streamInfo"]["streamContent"]
-    )
+    legacy_message = parse_legacy_stream_content(response["reply"]["streamInfo"]["streamContent"])
     assert legacy_message["type"] == "error"
     assert legacy_message["errorCode"] == "FAILED"
     assert "未分类的服务异常" in legacy_message["explanation"]
@@ -1462,9 +1476,7 @@ def test_legacy_registry_field_is_ignored_for_first_two_interfaces():
             )
         )
         overview = _assert_success_envelope(
-            _receive_final_frame(
-                websocket, _request_id("explicit-fallback-overview")
-            ),
+            _receive_final_frame(websocket, _request_id("explicit-fallback-overview")),
             "getWidgetCapabilityOverview",
             _request_id("explicit-fallback-overview"),
         )["data"]
@@ -1493,15 +1505,11 @@ def test_legacy_registry_field_is_ignored_for_first_two_interfaces():
 
 
 def test_registry_fallback_switch_defaults_to_enabled():
-    assert Settings.model_fields[
-        "enable_default_capability_registry_fallback"
-    ].default is True
+    assert Settings.model_fields["enable_default_capability_registry_fallback"].default is True
 
 
 def test_protocol_fallback_switch_defaults_to_enabled():
-    assert Settings.model_fields[
-        "enable_default_protocol_profile_fallback"
-    ].default is True
+    assert Settings.model_fields["enable_default_protocol_profile_fallback"].default is True
 
 
 def test_compact_protocol_fallback_switch_off_returns_unsupported(monkeypatch):
@@ -1519,9 +1527,7 @@ def test_compact_protocol_fallback_switch_off_returns_unsupported(monkeypatch):
     client = TestClient(app)
     device_info = {**DEVICE_INFO, "prdVer": UNSUPPORTED_APP_VERSION}
     request_id = _request_id("protocol-fallback-off")
-    with client.websocket_connect(
-        "/api/v1/ws/tools/generateWidgetCardCompactDsl"
-    ) as websocket:
+    with client.websocket_connect("/api/v1/ws/tools/generateWidgetCardCompactDsl") as websocket:
         websocket.send_json(
             _tool_payload(
                 {
@@ -1561,9 +1567,7 @@ def test_registry_fallback_switch_off_applies_to_all_three_interfaces(monkeypatc
     device_info = {**DEVICE_INFO, "prdVer": random_prd_ver}
 
     with client.websocket_connect("/api/v1/ws/tools/getWidgetCapabilityOverview") as websocket:
-        websocket.send_json(
-            _tool_payload({}, "fallback-off-overview", device_info=device_info)
-        )
+        websocket.send_json(_tool_payload({}, "fallback-off-overview", device_info=device_info))
         overview = _assert_success_envelope(
             _receive_final_frame(websocket, _request_id("fallback-off-overview")),
             "getWidgetCapabilityOverview",
@@ -1657,3 +1661,111 @@ def test_third_interface_uses_default_registry_fallback():
 
     assert response["status"] == "success"
     assert response["errorCode"] == ""
+
+
+def test_card_template_compat_route_requires_bearer_token(monkeypatch):
+    """验证公网 CardTemplate 兼容入口默认拒绝缺失或错误的 Bearer Token。"""
+    monkeypatch.setattr(get_settings(), "websocket_bearer_token", "test-token")
+    client = TestClient(app)
+    try:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.receive_json()
+    except WebSocketDisconnect as exc:
+        assert exc.code == 1008
+    else:
+        raise AssertionError("unauthorized CardTemplate WebSocket must be rejected")
+
+
+def test_tool_route_requires_bearer_when_server_token_is_configured(monkeypatch):
+    """验证部署态同一 Token 同时保护工具 WebSocket，避免公网绕过兼容入口。"""
+    monkeypatch.setattr(get_settings(), "websocket_bearer_token", "test-token")
+    client = TestClient(app)
+    try:
+        with client.websocket_connect("/api/v1/ws/tools/getWidgetCapabilityOverview") as websocket:
+            websocket.receive_json()
+    except WebSocketDisconnect as exc:
+        assert exc.code == 1008
+    else:
+        raise AssertionError("unauthorized tool WebSocket must be rejected")
+
+
+def test_card_template_compat_route_returns_standard_a2ui(monkeypatch):
+    """验证旧 card.generate 请求由 Python 路由返回标准 A2UI 增量和最终帧。"""
+    routes_module = importlib.import_module("api.routes")
+    schemas_module = importlib.import_module("api.schemas")
+    errors_module = importlib.import_module("core.errors")
+    monkeypatch.setattr(get_settings(), "websocket_bearer_token", "test-token")
+    messages = [
+        {"createSurface": {"surfaceId": "compat-surface", "width": 140, "height": 140}},
+        {
+            "updateComponents": {
+                "surfaceId": "compat-surface",
+                "surfaceRevision": 1,
+                "root": "root",
+                "components": [],
+            }
+        },
+    ]
+
+    class FakeService:
+        async def generate_widget_card_terse_dsl_nested2(self, request):
+            assert request.userQuery == "生成天气卡片"
+            assert request.options.forceHybridTemplate is True
+            assert request.options.testAuthorization == "hybrid-test-token"
+            assert request.candidateDataBindings[0].previewData == {"temperature": "31°"}
+            assert "previewData" not in request.model_dump(mode="json")["candidateDataBindings"][0]
+            return schemas_module.GenerateWidgetCardResponse(
+                status=errors_module.GenerationStatus.SUCCESS,
+                suggestSize="2x2",
+                message="ok",
+                renderMessages=messages,
+                templateCallCount=1,
+                expandedComponentCount=4,
+            )
+
+    monkeypatch.setattr(routes_module, "get_service", lambda _runtime=None: FakeService())
+    client = TestClient(app)
+    with client.websocket_connect(
+        "/ws", headers={"authorization": "Bearer test-token"}
+    ) as websocket:
+        websocket.send_json(
+            {
+                "type": "card.generate",
+                "requestId": "compat-request",
+                "pipeline": "card-plan-template",
+                "options": {
+                    "forceHybridTemplate": True,
+                    "testAuthorization": "hybrid-test-token",
+                },
+                "context": {
+                    "userQuery": "生成天气卡片",
+                    "size": "2x2",
+                    "title": "天气",
+                    "description": "天气概览",
+                    "candidateDataBindings": [
+                        {
+                            "capabilityId": "ViewWeather",
+                            "arguments": {"districtName": "深圳"},
+                            "writeResultTo": "/data/weather",
+                            "candidateOutputFields": [],
+                            "previewData": {"temperature": "31°"},
+                        }
+                    ],
+                    "candidateEventCandidates": [],
+                    "candidateAssetIds": [],
+                },
+            }
+        )
+        delta = websocket.receive_json()
+        result = websocket.receive_json()
+
+    assert delta["type"] == "card.generate.delta"
+    assert delta["phase"] == "body"
+    assert delta["messages"] == messages
+    assert result["type"] == "card.generate.result"
+    assert result["status"] == "completed"
+    assert result["surfaceId"] == "compat-surface"
+    assert result["surfaceRevision"] == 1
+    assert result["messages"] == messages
+    assert result["metrics"]["templateCallCount"] == 1
+    assert result["metrics"]["expandedComponentCount"] == 4

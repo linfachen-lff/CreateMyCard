@@ -7,12 +7,12 @@
 
 - WebSocket 路径：`/api/v1/ws/tools/generateWidgetCardTerseDslNested2`
 - 请求模型：`GenerateWidgetCardRequest`
-- 模型源格式：TerseDSL-Nested-2
+- 模型源格式：高级组件和原模型分支均为 TerseDSL-Nested-2
 - 最终 `genui`：由本地受限转换器生成的标准三段 A2UI JSONL
 - 默认模型后端：`design_compact_model_backend`，当前默认值为 `openai`
 - 支持创建：是
 - 支持多轮编辑：是，由 `enable_widget_edit` 控制
-- 当前代码是否允许动态数据和事件入参：否
+- 当前代码是否允许动态数据和事件入参：是，必须先通过能力注册表裁决
 - 转换或最终校验错误是否阻断保存：是
 
 ## 2. 方法调用链
@@ -33,10 +33,16 @@ generate_widget_card_terse_dsl_nested2_ws
 → DeviceCapabilityResolver.resolve_generation_data_bindings
 → CardSpecBuilder.build
 → TaskSpecBuilder.build
-→ PromptBuilder.build_terse_dsl_nested2
-→ A2UIModelClient.generate
-→ TerseNested2Processor.process
-→ convert_terse_dsl_nested2_to_a2ui
+→ AdvancedComponentPipeline.generate
+  → 第一轮 A2UIModelClient.generate_json 生成并校验 UIBrief
+  → 确定性选择组件和 Design Token
+  → 第二轮 A2UIModelClient.generate_json 生成并校验 Invocation
+  → 独立 build() 模板直接生成 TerseDSL-Nested-2
+  → TerseNested2Processor.process
+→ 未命中或高级分支失败时 PromptBuilder.build_terse_dsl_nested2
+  → A2UIModelClient.generate
+  → TerseNested2Processor.process
+  → convert_terse_dsl_nested2_to_a2ui
 → ArtifactValidator.validate
 → RetryController.run
 → WidgetGenerationService._build_artifact
@@ -49,6 +55,26 @@ generate_widget_card_terse_dsl_nested2_ws
 
 - 路由入口：`../widget_service/cloud/api/routes.py`
 - 生成编排：`../widget_service/cloud/services/widget_generation_service.py`
+- 高级组件编排和模板：`../widget_service/cloud/services/advanced_component_pipeline/`
+
+高级组件采用目录插件注册方式。`components/` 下每个子目录表示一个组件插件，目录内自行声明
+`ComponentSpec`、Invocation Schema、离线映射、槽位校验和 `build()`。注册中心通过包扫描自动发现插件；
+外部选择、参数映射、编译和服务编排不得导入具体组件，也不得按 `componentId` 编写分支。新增组件只需
+增加组件子目录并注册 `ComponentPlugin`，无需修改外部流程。
+
+高级组件支持双输出诊断开关：
+
+```bash
+# 默认：模板行结构 → TerseDSL-Nested-2 → 标准 A2UI
+WIDGET_SERVICE_ADVANCED_COMPONENT_OUTPUT_FORMAT=terse
+
+# 对照：模板行结构 → 原 Design Compact 编译函数 → 标准 A2UI（绕过 Terse 转换器）
+WIDGET_SERVICE_ADVANCED_COMPONENT_OUTPUT_FORMAT=a2ui
+```
+
+两条路径复用同一次组件选择、Invocation、Design Token 和模板行结构，只有最终协议序列化路径不同。
+`a2ui` 模式用于定位 Terse 序列化或转换问题，结果直接交给 Standard A2UI Processor 校验；`terse`
+模式保持正式接口的默认行为。
 - 路由策略和 Processor：`../widget_service/cloud/services/generation_pipeline.py`
 - Terse 解析转换：`../widget_service/cloud/services/terse_dsl_nested2_converter.py`
 - Prompt：`../widget_service/cloud/services/prompt_builder.py`

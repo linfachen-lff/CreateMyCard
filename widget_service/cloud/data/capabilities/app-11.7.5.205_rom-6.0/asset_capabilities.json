@@ -204,7 +204,8 @@
     "description": "样式：耳机收纳盒实心图标，默认黑色，图形为无线耳机充电盒造型；适用：蓝牙耳机设备连接、音频设备管理。",
     "sceneTags": [
       "device",
-      "audio"
+      "audio",
+      "product"
     ],
     "minXiaoyiVersion": "1.0.0"
   },
@@ -596,7 +597,9 @@
     "type": "asset",
     "src": "resources/base/media/icon_watermark.svg",
     "description": "样式：米灰色低透明度的大型日历轮廓装饰，画布和图形尺寸关系特殊，保留原色与透明层级；适用：日程卡片的弱化背景水印或装饰锚点。",
-    "sceneTags": [],
+    "sceneTags": [
+      "watermark"
+    ],
     "minXiaoyiVersion": "1.0.0"
   },
   {
@@ -612,7 +615,9 @@
     "type": "asset",
     "src": "resources/base/media/icon_high_temperature.svg",
     "description": "样式：默认黑色的单色线框温度计，内部温度柱较高，源文件语义指向体温；适用：体温偏高、发热、人体温度提醒。",
-    "sceneTags": [],
+    "sceneTags": [
+      "alert"
+    ],
     "minXiaoyiVersion": "1.0.0"
   },
   {
@@ -620,7 +625,9 @@
     "type": "asset",
     "src": "resources/base/media/icon_weather1.svg",
     "description": "样式：黄、白、浅灰多组渐变的彩色天气图标，太阳从云层右上方露出，表示多云或晴间多云，保留原色；适用：多云、晴间多云、天气概览或天气入口。",
-    "sceneTags": [],
+    "sceneTags": [
+      "condition"
+    ],
     "minXiaoyiVersion": "1.0.0"
   },
   {
@@ -696,6 +703,17 @@
     "minXiaoyiVersion": "1.0.0"
   },
   {
+    "id": "asset.icon_schedule2",
+    "type": "asset",
+    "src": "resources/base/media/icon_schedule2.svg",
+    "description": "日程图标，适用场景：当下日程",
+    "sceneTags": [
+      "calendar",
+      "schedule"
+    ],
+    "minXiaoyiVersion": "1.0.0"
+  },
+  {
     "id": "asset.icon_left",
     "type": "asset",
     "src": "resources/base/media/icon_left.svg",
@@ -716,6 +734,105 @@
     "type": "asset",
     "src": "resources/base/media/icon_right.svg",
     "description": "样式：黑色实心圆形徽标，内部以白色显示大写 R，源文件语义为右耳机，建议保留原色；适用：右耳、右声道、右侧耳机电量。",
+    "sceneTags": [],
+    "minXiaoyiVersion": "1.0.0"
+  },
+  {
+    "id": "asset.phone_fill_1",
+    "type": "asset",
+    "src": "resources/base/media/phone_fill_1.svg",
+    "description": "电话实心图标（变体），黑色，图形为听筒加信号波形，适用场景：来电接听、通话状态展示",
+    "sceneTags": [
+      "phone",
+      "call"
+    ],
+    "minXiaoyiVersion": "1.0.0"
+  },
+  {
+    "id": "asset.icon_time",
+    "type": "asset",
+    "src": "resources/base/media/icon_time.svg",
+    "description": "时间图标，适用场景：当下日程",
+    "sceneTags": [],
+    "minXiaoyiVersion": "1.0.0"
+  },
+  {
+    "id": "asset.icon_call",
+    "type": "asset",
+    "src": "resources/base/media/icon_call.svg",
+    "description": "电话图标，适用场景：亲人关怀",
+    "sceneTags": [],
+    "minXiaoyiVersion": "1.0.0"
+  },
+  {
+    "id": "asset.icon_charge",
+    "type": "asset",
+    "src": "resources/base/media/icon_charge.svg",
+    "description": "充电/闪电图标，适用场景：低电模式",
+    "sceneTags": [],
+    "minXiaoyiVersion": "1.0.0"
+  },
+  {
+    "id": "asset.icon_clear",
+    "type": "asset",
+    "src": "resources/base/media/icon_clear.svg",
+    "description": "清除图标，适用场景：清理无忧",
+    "sceneTags": [],
+    "minXiaoyiVersion": "1.0.0"
+  },
+  {
+    "id": "asset.icon_time1",
+    "type": "asset",
+    "src": "resources/base/media/icon_time1.svg",
+    "description": "时间图标，适用场景：雨天打车",
+    "sceneTags": [],
+    "minXiaoyiVersion": "1.0.0"
+  },
+  {
+    "id": "asset.icon_alarm_clock",
+    "type": "asset",
+    "src": "resources/base/media/icon_alarm_clock.svg",
+    "description": "闹钟图标，适用场景：当下日程",
+    "sceneTags": [],
+    "minXiaoyiVersion": "1.0.0"
+  },
+  {
+    "id": "asset.icon_electricity",
+    "type": "asset",
+    "src": "resources/base/media/icon_electricity.svg",
+    "description": "电池图标，适用场景：低电模式",
+    "sceneTags": [],
+    "minXiaoyiVersion": "1.0.0"
+  },
+  {
+    "id": "asset.icon_alarm_clock1",
+    "type": "asset",
+    "src": "resources/base/media/icon_alarm_clock1.svg",
+    "description": "闹钟图标，适用场景：睡眠监督",
+    "sceneTags": [],
+    "minXiaoyiVersion": "1.0.0"
+  },
+  {
+    "id": "asset.icon_remind",
+    "type": "asset",
+    "src": "resources/base/media/icon_remind.svg",
+    "description": "提醒图标，适用场景：睡眠监督",
+    "sceneTags": [],
+    "minXiaoyiVersion": "1.0.0"
+  },
+  {
+    "id": "asset.icon_sleep",
+    "type": "asset",
+    "src": "resources/base/media/icon_sleep.svg",
+    "description": "睡眠图标，适用场景：睡眠监督",
+    "sceneTags": [],
+    "minXiaoyiVersion": "1.0.0"
+  },
+  {
+    "id": "asset.icon_like",
+    "type": "asset",
+    "src": "resources/base/media/icon_like.svg",
+    "description": "收藏/心形图标，适用场景：戴耳机播控",
     "sceneTags": [],
     "minXiaoyiVersion": "1.0.0"
   }

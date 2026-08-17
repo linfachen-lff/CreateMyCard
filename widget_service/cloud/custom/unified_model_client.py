@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from app.logger import json_for_log, logger
 from config.config import Settings
+from custom.deepseek_call_budget import DeepSeekCallBudget, DeepSeekCallBudgetExceeded
 from custom.model_runtime import ModelExecutionRuntime
 from custom.model_transport import ModelBackend, ModelProvider, ModelTransportError
 from models.generation import ModelRequestContext
@@ -44,6 +45,10 @@ class UnifiedModelClient:
         self.retry_count = 0
         self._sleep = sleep or asyncio.sleep
         self._random_uniform = random_uniform or random.uniform
+        self.deepseek_budget = DeepSeekCallBudget(
+            settings.resolved_deepseek_call_budget_path,
+            settings.deepseek_call_budget_limit,
+        )
 
     async def generate(
         self,
@@ -73,6 +78,8 @@ class UnifiedModelClient:
                     allow_mep_partial_abort,
                 )
             except Exception as exc:
+                if isinstance(exc, DeepSeekCallBudgetExceeded):
+                    raise
                 last_error = exc
         if last_error is None:
             raise ModelTransportError("model provider plan is empty")
@@ -136,6 +143,8 @@ class UnifiedModelClient:
                 )
                 return self._require_output(result)
             except Exception as exc:
+                if isinstance(exc, DeepSeekCallBudgetExceeded):
+                    raise
                 recovered = self._recover_mep_partial_output(
                     exc,
                     plan.provider,
@@ -166,6 +175,12 @@ class UnifiedModelClient:
         messages: list[dict[str, str]],
         request_context: ModelRequestContext | None,
     ) -> str:
+        if provider in {"deepseek_platform", "llmclient"}:
+            budget = await asyncio.to_thread(self.deepseek_budget.reserve, provider)
+            logger.info(
+                f"{_MODULE} deepseek_budget_reserved provider={provider} "
+                f"used={budget.used} remaining={budget.remaining} limit={budget.limit}"
+            )
         return await self.runtime.generate_once(provider, messages, request_context)
 
     def _retry_delay_seconds(self, retry_index: int) -> float:

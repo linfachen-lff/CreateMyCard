@@ -2,7 +2,7 @@
   "name": "generateWidgetCardTerseDslNested2",
   "transport": "websocket",
   "path": "/api/v1/ws/tools/generateWidgetCardTerseDslNested2",
-  "description": "使用本地 TerseDSL-Nested-2 Prompt 和受限转换器生成静态标准 A2UI 卡片 artifact。",
+  "description": "使用 UI Brief、整卡置信度路由和 CardPlan 局部 Template 融合生成标准 A2UI artifact。",
   "messageEnvelope": {
     "type": "object",
     "required": ["content", "deviceInfo", "session"],
@@ -20,9 +20,27 @@
           "size": {"type": "string", "enum": ["2x2", "2x4"], "default": "2x2"},
           "title": {"type": "string", "minLength": 1},
           "description": {"type": "string", "minLength": 1},
+          "candidateDataBindings": {
+            "type": "CandidateDataBinding[]",
+            "description": "候选数据能力；混合编译器只允许引用裁决后的 TaskSpec 路径。"
+          },
+          "candidateEventCandidates": {
+            "type": "CandidateEventCandidate[]",
+            "description": "候选点击事件；Template Action 最终绑定到裁决后的完整 call/args。"
+          },
           "candidateAssetIds": {
             "type": "string[]",
             "description": "可选本地素材 ID；模型只能使用有效素材对应的本地路径。"
+          },
+          "options": {
+            "type": "object",
+            "required": false,
+            "description": "生产调用方不传。仅 local/test 可在服务开关开启且 token 校验通过时强制混合路线。",
+            "properties": {
+              "allowDegradation": {"type": "boolean", "default": true},
+              "forceHybridTemplate": {"type": "boolean", "default": false},
+              "testAuthorization": {"type": "string", "required": false}
+            }
           }
         }
       },
@@ -32,10 +50,6 @@
       "utterance": {"type": "object"}
     }
   },
-  "unsupportedProperties": [
-    "candidateDataBindings",
-    "candidateEventCandidates"
-  ],
   "output": {
     "description": "华为流处理插件 start/partial/command/final 包络；command 的 content 指令包含 cardId 和 size。"
   }

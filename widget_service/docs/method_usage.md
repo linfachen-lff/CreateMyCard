@@ -122,14 +122,19 @@ Design Compact DSL，再由服务内转换器读取该 Design profile 下的 `pr
 第三至第五入口共享同一策略驱动生成管线、校验和 repair 语义，
 调用方不需要传 `protocolProfileId`，旧值也不能覆盖路由选择结果。
 
-`generateWidgetCardTerseDslNested2` 从
-`cloud/data/protocol_profiles/terse-dsl-nested-2/PROMPT.md` 读取本地 Prompt。模型输出只进入
-`cloud/services/terse_dsl_nested2_converter.py` 的受限 Parser，不作为 Python 或 JavaScript 执行；
-Parser 只接受单根组件调用、字面量、白名单组件和安全对象键，再复用标准 A2UI 转换与 artifact 校验。
-该接口支持静态 create/edit；动态数据绑定和点击事件返回 `PROTOCOL_CAPABILITY_UNSUPPORTED`。edit 与
-第四接口共用 `enable_widget_edit` 和 artifact 的 `designcompactdsl` 块，但会按 TerseDSL-Nested-2
-语法验证其中的上一轮模型原始输出。第五接口沿用 Design Compact 后端配置；两项后端配置都可取
-`mep` 或 `openai`。其它配置值会在启动配置校验阶段直接报错，不做自动迁移。
+`generateWidgetCardTerseDslNested2` 的 create 模式先生成兼容扩展的 `UIBrief`，再由服务端对既有整卡
+模板候选评分。高置信度继续填充整卡模板；低置信度的第二次模型调用生成 `card@1` 外壳以及局部
+Template/标准组件混排内容。受限 Parser 不执行 Python 或 JavaScript；Registry 中的 Template 在服务端
+静态展开并复用现有 Terse UI IR/A2UI Adapter，最终 artifact 不含 `Template`。动态数据、点击事件和素材
+都只允许引用能力裁决后的 TaskSpec 候选。UIBrief 可用 `actionPlacement=card|content|none|auto` 表达
+Action 所属语义区；`content` 必须配合可信 Action Template，服务端拒绝根 Action 与内容 Action 重复绑定。
+Theme 会与所选 Template 的兼容列表做确定性校正。edit 继续使用既有 `enable_widget_edit` 和完整
+`designcompactdsl` Token 协议。第五接口沿用 Design Compact 后端配置；两项后端配置都可取 `mep` 或
+`openai`，其它配置值在启动校验阶段直接报错。
+
+生产调用方不要传 `options.forceHybridTemplate` 或 `options.testAuthorization`。该 bypass 仅供自动化测试，
+必须由服务端显式开启，环境必须为 local/test，并通过独立 token 的常量时间校验；任一条件不满足即拒绝。
+详细安全、预算、评估和回滚规则见 `cardplan_template_production.md`。
 
 第四接口的协议区间索引位于 `cloud/data/protocol_profiles/registry_ranges.json`。未命中时，只有
 `WIDGET_SERVICE_ENABLE_DEFAULT_PROTOCOL_PROFILE_FALLBACK=true` 才回退到

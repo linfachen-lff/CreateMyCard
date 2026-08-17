@@ -27,9 +27,7 @@ class Settings(BaseSettings):
     enable_sensitive_log_fields: bool = True
     capability_registry_version: str = _DEFAULT_CAPABILITY_REGISTRY_VERSION
     enable_default_capability_registry_fallback: bool = True
-    ids_installation_filter_package_names: tuple[str, ...] = (
-        "com.huawei.hmos.health.core",
-    )
+    ids_installation_filter_package_names: tuple[str, ...] = ("com.huawei.hmos.health.core",)
     protocol_profile_id: str = "a2ui-form-rom6.0-v1"
     design_compact_profile_id: str = "design-compact-dsl"
     enable_default_protocol_profile_fallback: bool = True
@@ -46,6 +44,17 @@ class Settings(BaseSettings):
     enable_a2ui_model_mock: bool = True
     a2ui_form_model_backend: Literal["mep", "openai"] = "mep"
     design_compact_model_backend: Literal["mep", "openai"] = "openai"
+    advanced_component_output_format: Literal["terse", "a2ui"] = "terse"
+    advanced_whole_card_confidence_threshold: float = Field(default=0.75, ge=0.5, le=0.99)
+    enable_advanced_whole_card_template: bool = True
+    enable_hybrid_test_bypass: bool = False
+    hybrid_test_bypass_token: str = ""
+    websocket_bearer_token: str = ""
+    enable_widget_batch_recording: bool = False
+    enable_advanced_component_data_admission_bypass_for_batch: bool = False
+    widget_batch_results_path: str = "workspace/widget_batch_runs"
+    widget_batch_max_input_bytes: int = Field(default=512 * 1024, ge=1)
+    widget_batch_max_output_bytes: int = Field(default=2 * 1024 * 1024, ge=1)
     openai_master_client: Literal["deepseek_platform", "llmclient"] = "deepseek_platform"
     openai_fallback_client: Literal["deepseek_platform", "llmclient"] = "llmclient"
     enable_openai_fallback: bool = True
@@ -62,6 +71,7 @@ class Settings(BaseSettings):
     deepseek_platform_default_app_name: str = "com.huawei.hmos.vassistant"
     # llmclient 使用的 DeepSeek 兼容 WebSocket 请求参数；默认值保持原客户端行为。
     deepseek_api_key: str = "AccessService"
+    deepseek_api_url: str = ""
     deepseek_model: str = "deepseek-ai/DeepSeek-V4-Flash"
     deepseek_ws_url: str = _DEFAULT_LLMCLIENT_WS_URL
     deepseek_user: str = "genui_user"
@@ -69,11 +79,15 @@ class Settings(BaseSettings):
     deepseek_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     deepseek_top_p: float = Field(default=0.9, ge=0.0, le=1.0)
     deepseek_top_k: int = Field(default=1, ge=1)
-    deepseek_max_tokens: int = Field(default=128_000, ge=1)
+    deepseek_max_tokens: int = Field(default=8_192, ge=1)
     deepseek_enable_thinking: bool = False
     deepseek_include_usage: bool = True
     deepseek_debug_usage: bool = True
     deepseek_recv_timeout: int = Field(default=120, ge=1)
+    deepseek_call_budget_limit: int = Field(default=400, ge=0)
+    deepseek_call_budget_path: str = "workspace/runtime/deepseek_call_budget.sqlite3"
+    ux_mixed_validation_max_retry_attempts: int = Field(default=2, ge=0, le=3)
+
     system_prompt_file: str = "docs/system_prompt.txt"
     edit_system_prompt_file: str = "docs/edit_system_prompt.txt"
     repair_system_prompt_file: str = "docs/repair_system_prompt.txt"
@@ -202,6 +216,22 @@ class Settings(BaseSettings):
             return path
         return (self.package_root / path).resolve()
 
+    @property
+    def resolved_deepseek_call_budget_path(self) -> Path:
+        """Resolve the persistent runtime-only DeepSeek budget database path."""
+        path = Path(self.deepseek_call_budget_path)
+        if path.is_absolute():
+            return path
+        return (self.package_root / path).resolve()
+
+    @property
+    def resolved_widget_batch_results_path(self) -> Path:
+        """Resolve the runtime-only widget batch result directory."""
+        path = Path(self.widget_batch_results_path)
+        if path.is_absolute():
+            return path.resolve()
+        return (self.package_root / path).resolve()
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -215,7 +245,7 @@ def get_settings() -> Settings:
 
 class LoggingConfig:
     PROJECT_ROOT = get_settings().PROJECT_ROOT
-    if get_settings().LOCAL_FLAG:
+    if get_settings().LOCAL_FLAG or get_settings().env in {"local", "test"}:
         LOG_DIR = PROJECT_ROOT / "logs"
     else:
         LOG_DIR = "/opt/test/logs/genui-agent-service/debug"

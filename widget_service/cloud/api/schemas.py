@@ -154,6 +154,7 @@ class ToolRequestEnvelope(BaseModel):
 
 class VersionedToolRequest(BaseModel):
     _model_request_context: ModelRequestContext | None = PrivateAttr(default=None)
+    _widget_batch_request: bool = PrivateAttr(default=False)
 
     locale: str = "zh-CN"
     uid: str
@@ -281,3 +282,11 @@ class GenerateWidgetCardResponse(BaseModel):
     removedCapabilities: list[RemovedCapability] = Field(default_factory=list)
     errorCode: str = ""
     effectiveCapabilities: dict[str, list[Any]] = Field(default_factory=dict)
+    # 仅供同进程的 CardTemplate WebSocket 兼容层增量下发；工具协议和日志均不序列化。
+    renderMessages: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+    templateCallCount: int = Field(default=0, exclude=True)
+    expandedComponentCount: int = Field(default=0, exclude=True)
+    generationFallbackUsed: bool = Field(default=False, exclude=True)
+    # 仅供批测存档每次模型调用的阶段、耗时、原始输出与异常；不进入工具协议。
+    modelSteps: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+    batchDiagnostics: dict[str, Any] = Field(default_factory=dict, exclude=True)

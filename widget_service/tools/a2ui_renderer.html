@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>A2UI Card Renderer</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f4f5f7; color: #182431; }
+    main { display: grid; grid-template-columns: minmax(420px, 1fr) minmax(380px, 1fr); min-height: 100vh; }
+    .panel { padding: 24px; }
+    .editor { background: #fff; border-right: 1px solid #dfe3e8; }
+    h1 { margin: 0 0 6px; font-size: 22px; }
+    .hint { margin: 0 0 16px; color: #65717e; font-size: 13px; }
+    textarea { width: 100%; height: calc(100vh - 170px); resize: vertical; border: 1px solid #ccd3db; border-radius: 10px; padding: 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+    button, select, .file-label { border: 1px solid #bdc6d0; border-radius: 8px; background: #fff; padding: 8px 12px; font: inherit; cursor: pointer; }
+    button.primary { border-color: #0a59f7; background: #0a59f7; color: #fff; }
+    input[type=file] { display: none; }
+    .preview { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+    .stage { display: grid; place-items: center; width: 100%; min-height: 420px; padding: 48px; border-radius: 16px; background: linear-gradient(145deg, #e9edf2, #f9fafb); }
+    #card { position: relative; flex: none; overflow: hidden; background: #fff; box-shadow: 0 14px 40px #20304024; }
+    #error { width: 100%; white-space: pre-wrap; color: #b42318; font: 12px/1.5 ui-monospace, monospace; }
+    .a2ui-stack { position: relative; }
+    .a2ui-stack > * { position: absolute; inset: 0; margin: auto; }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; } .editor { border-right: 0; border-bottom: 1px solid #dfe3e8; } textarea { height: 360px; } }
+  </style>
+</head>
+<body>
+<main>
+  <section class="panel editor">
+    <h1>A2UI Card Renderer</h1>
+    <p class="hint">单文件版：粘贴三段 A2UI JSONL，或导入本地文件。</p>
+    <div class="toolbar">
+      <label class="file-label">导入 JSONL<input id="file" type="file" accept=".jsonl,.json,.txt,.md"></label>
+      <select id="size"><option value="2x2">2x2 · 160×160</option><option value="2x4">2x4 · 320×160</option></select>
+      <button id="render" class="primary">渲染</button>
+      <button id="download">导出 PNG</button>
+    </div>
+    <textarea id="source" spellcheck="false" placeholder='粘贴 createSurface、updateComponents、updateDataModel 三段 JSONL'></textarea>
+  </section>
+  <section class="panel preview">
+    <div class="stage"><div id="card"></div></div>
+    <div id="error"></div>
+  </section>
+</main>
+<script>
+(() => {
+  "use strict";
+  const source = document.querySelector("#source");
+  const card = document.querySelector("#card");
+  const errorBox = document.querySelector("#error");
+  const sizeSelect = document.querySelector("#size");
+  const dims = { "2x2": [160, 160], "2x4": [320, 160] };
+  const justify = { start: "flex-start", center: "center", end: "flex-end", spaceBetween: "space-between", spaceAround: "space-around", spaceEvenly: "space-evenly" };
+  const align = { start: "flex-start", center: "center", end: "flex-end", top: "flex-start", bottom: "flex-end", stretch: "stretch" };
+  const directions = { RightBottom: 135, LeftBottom: 225, RightTop: 45, LeftTop: 315, Bottom: 180, Top: 0, Right: 90, Left: 270 };
+
+  function color(value) {
+    if (typeof value !== "string" || value[0] !== "#") return value || "transparent";
+    if (value.length === 9) {
+      const a = parseInt(value.slice(1, 3), 16) / 255;
+      return `rgba(${parseInt(value.slice(3, 5), 16)},${parseInt(value.slice(5, 7), 16)},${parseInt(value.slice(7, 9), 16)},${a.toFixed(3)})`;
+    }
+    return value;
+  }
+
+  function pointer(path, data) {
+    if (path === "/") return data;
+    return path.replace(/^\//, "").split("/").reduce((value, key) => value == null ? undefined : value[key.replace(/~1/g, "/").replace(/~0/g, "~")], data);
+  }
+
+  function resolve(value, context) {
+    if (typeof value !== "string" || !/^\s*\{\{[\s\S]*}}\s*$/.test(value)) return value;
+    let inner = value.replace(/^\s*\{\{/, "").replace(/}}\s*$/, "").trim();
+    const exact = inner.match(/^\$\{(\/[^}]+)}$/);
+    if (exact) return pointer(exact[1], context.data);
+    inner = inner.replace(/\$\{(\/[^}]+)}/g, (_, path) => JSON.stringify(pointer(path, context.data) ?? ""));
+    try {
+      const data = context.data;
+      const item = context.item;
+      const index = context.index;
+      return Function("data", "item", "index", `"use strict";return (${inner})`)(data, item, index);
+    } catch (_) { return ""; }
+  }
+
+  function length(value) { return typeof value === "number" ? `${value}px` : value === "matchParent" ? "100%" : value; }
+  function set(style, key, value) { if (value !== undefined && value !== null) style[key] = value; }
+
+  function css(styles = {}, context) {
+    const out = {};
+    const value = key => resolve(styles[key], context);
+    for (const key of ["width", "height", "minWidth", "minHeight", "maxWidth", "maxHeight", "borderRadius", "borderWidth", "fontSize", "maxFontSize", "minFontSize"]) set(out, key, length(value(key)));
+    for (const key of ["opacity", "fontWeight", "aspectRatio", "textAlign", "objectFit", "visibility"]) set(out, key, value(key));
+    for (const key of ["backgroundColor", "borderColor", "fontColor", "color", "fillColor"]) if (styles[key] != null) out[key === "fontColor" ? "color" : key] = color(value(key));
+    if (styles.padding != null) {
+      const p = value("padding");
+      if (typeof p === "object") Object.assign(out, { paddingTop: length(p.top), paddingRight: length(p.right), paddingBottom: length(p.bottom), paddingLeft: length(p.left) });
+      else out.padding = length(p);
+    }
+    if (styles.margin != null) {
+      const m = value("margin");
+      if (typeof m === "object") Object.assign(out, { marginTop: length(m.top), marginRight: length(m.right), marginBottom: length(m.bottom), marginLeft: length(m.left) });
+      else out.margin = length(m);
+    }
+    if (styles.borderWidth != null) out.borderStyle = "solid";
+    if (styles.clip != null) out.overflow = value("clip") ? "hidden" : "visible";
+    if (styles.flexShrink != null) out.flexShrink = value("flexShrink");
+    if (styles.layoutWeight != null) out.flexGrow = value("layoutWeight");
+    if (styles.justifyContent) out.justifyContent = justify[value("justifyContent")] || value("justifyContent");
+    if (styles.alignItems) out.alignItems = align[value("alignItems")] || value("alignItems");
+    if (styles.alignContent) out.alignContent = align[value("alignContent")] || value("alignContent");
+    if (styles.shadow) out.boxShadow = `${styles.shadow.fill ? "inset " : ""}${styles.shadow.offsetX || 0}px ${styles.shadow.offsetY || 0}px ${styles.shadow.radius || 0}px ${color(styles.shadow.color || "#33000000")}`;
+    if (styles.linearGradient) {
+      const gradient = styles.linearGradient;
+      const angle = gradient.angle ?? directions[gradient.direction] ?? 180;
+      const stops = (gradient.colors || []).map(([c, stop]) => `${color(c)} ${Number(stop) * 100}%`).join(",");
+      out.backgroundImage = `linear-gradient(${angle}deg,${stops})`;
+    }
+    if (styles.maxLines != null) Object.assign(out, { display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: styles.maxLines, overflow: "hidden" });
+    return out;
+  }
+
+  function apply(element, styles) { Object.assign(element.style, styles); return element; }
+  function children(component, byId, context) {
+    if (!component.children) return [];
+    if (Array.isArray(component.children)) return component.children.map(id => renderNode(byId.get(id), byId, context));
+    const list = pointer(component.children.path, context.data);
+    return Array.isArray(list) ? list.map((item, index) => renderNode(byId.get(component.children.componentId), byId, { ...context, item, index })) : [];
+  }
+
+  function renderNode(component, byId, context) {
+    if (!component) return document.createComment("missing component");
+    const styles = css(component.styles, context);
+    let element;
+    if (component.component === "Text") {
+      element = document.createElement("div");
+      element.textContent = String(resolve(component.content ?? "", context) ?? "");
+      Object.assign(element.style, { wordBreak: "break-word", minWidth: 0 });
+    } else if (component.component === "Image") {
+      element = document.createElement("img");
+      element.alt = component.accessibility?.label || "";
+      element.src = String(resolve(component.src || "", context));
+      element.onerror = () => { element.removeAttribute("src"); element.style.background = "#e8ebef"; };
+    } else if (component.component === "Divider") {
+      element = document.createElement("div");
+      const vertical = component.styles?.vertical;
+      Object.assign(element.style, vertical ? { width: length(component.styles?.strokeWidth || 1), height: "100%" } : { height: length(component.styles?.strokeWidth || 1), width: "100%" }, { background: color(component.styles?.color || "#33000000") });
+    } else if (component.component === "Progress") {
+      const value = Number(resolve(component.value, context)) || 0;
+      const total = Number(resolve(component.total, context)) || 100;
+      const pct = Math.max(0, Math.min(100, value / total * 100));
+      element = document.createElement("div");
+      const progressColor = color(component.styles?.color || "#0a59f7");
+      if (["ring", "scaleRing"].includes(component.styles?.type)) {
+        const stroke = Number(component.styles?.strokeWidth || 6);
+        Object.assign(element.style, { width: styles.width || "48px", height: styles.height || "48px", borderRadius: "50%", background: `conic-gradient(${progressColor} ${pct * 3.6}deg,${color(component.styles?.backgroundColor || "#19000000")} 0)` });
+        const center = document.createElement("div");
+        Object.assign(center.style, { position: "absolute", inset: `${stroke}px`, borderRadius: "50%", background: color(component.styles?.centerColor || "#fff") });
+        element.style.position = "relative"; element.append(center);
+      } else {
+        Object.assign(element.style, { width: styles.width || "100%", height: styles.height || "4px", borderRadius: styles.borderRadius || "2px", overflow: "hidden", background: color(component.styles?.backgroundColor || "#19000000") });
+        const bar = document.createElement("div"); Object.assign(bar.style, { width: `${pct}%`, height: "100%", background: progressColor }); element.append(bar);
+      }
+    } else if (component.component === "Button") {
+      element = document.createElement("button"); element.textContent = String(resolve(component.label ?? "", context)); element.disabled = component.enabled === false; element.style.border = component.styles?.borderWidth ? undefined : "none";
+    } else if (component.component === "Checkbox") {
+      element = document.createElement("label"); const input = document.createElement("input"); input.type = "checkbox"; input.checked = component.select === true; input.disabled = true; element.append(input, document.createTextNode(String(resolve(component.label || "", context)))); Object.assign(element.style, { display: "inline-flex", alignItems: "center", gap: "6px" });
+    } else {
+      element = document.createElement("div");
+      if (component.component === "Stack") element.className = "a2ui-stack";
+      else Object.assign(element.style, { display: "flex", flexDirection: component.component === "Row" ? "row" : "column" });
+      const gap = component.itemMargin ?? component.space;
+      if (gap != null) element.style.gap = length(gap);
+      const childNodes = children(component, byId, context);
+      if (component.component === "Stack") childNodes.forEach(child => Object.assign(child.style, { position: "absolute", inset: "0", margin: "auto" }));
+      element.append(...childNodes);
+    }
+    element.dataset.componentId = component.id;
+    return apply(element, styles);
+  }
+
+  function parse(text) {
+    let input = text.trim();
+    try { const wrapper = JSON.parse(input); if (typeof wrapper.genui === "string") input = wrapper.genui; } catch (_) {}
+    const messages = input.split(/\r?\n/).filter(line => line.trim()).map(line => JSON.parse(line));
+    let surface = {}, update = {}, data = {};
+    for (const message of messages) {
+      if (message.createSurface) surface = message.createSurface;
+      if (message.updateComponents) update = message.updateComponents;
+      if (message.updateDataModel) data = message.updateDataModel.value || {};
+    }
+    if (!Array.isArray(update.components)) throw new Error("没有找到 updateComponents.components");
+    return { surface, update, data };
+  }
+
+  function render() {
+    errorBox.textContent = "";
+    try {
+      const payload = parse(source.value);
+      const configured = dims[sizeSelect.value];
+      const width = Number(payload.surface.width) || configured[0];
+      const height = Number(payload.surface.height) || configured[1];
+      Object.assign(card.style, { width: `${width}px`, height: `${height}px` });
+      card.replaceChildren();
+      const byId = new Map(payload.update.components.map(component => [component.id, component]));
+      const root = byId.get(payload.update.root || "root");
+      if (!root) throw new Error("没有找到 root 组件");
+      card.append(renderNode(root, byId, { data: payload.data, item: null, index: 0 }));
+    } catch (error) { errorBox.textContent = String(error.stack || error); }
+  }
+
+  async function downloadPng() {
+    render();
+    if (errorBox.textContent) return;
+    const width = card.offsetWidth, height = card.offsetHeight;
+    const clone = card.cloneNode(true);
+    const markup = new XMLSerializer().serializeToString(clone);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width * 2}" height="${height * 2}" viewBox="0 0 ${width} ${height}"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml"><style>*{box-sizing:border-box;margin:0}</style>${markup}</div></foreignObject></svg>`;
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement("canvas"); canvas.width = width * 2; canvas.height = height * 2;
+      const context = canvas.getContext("2d"); context.scale(2, 2); context.drawImage(image, 0, 0);
+      URL.revokeObjectURL(image.src);
+      const link = document.createElement("a"); link.download = `a2ui-${sizeSelect.value}.png`; link.href = canvas.toDataURL("image/png"); link.click();
+    };
+    image.onerror = () => { errorBox.textContent = "PNG 导出失败；包含跨域图片时请先替换为 data URI 或同源资源。"; };
+    image.src = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
+  }
+
+  document.querySelector("#render").addEventListener("click", render);
+  document.querySelector("#download").addEventListener("click", downloadPng);
+  document.querySelector("#file").addEventListener("change", async event => { const file = event.target.files[0]; if (file) { source.value = await file.text(); render(); } });
+  sizeSelect.addEventListener("change", render);
+})();
+</script>
+</body>
+</html>

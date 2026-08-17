@@ -23,12 +23,19 @@ from config.config import get_settings
 from core.errors import ErrorCode, GenerationStatus
 from custom.a2ui_model_client import A2UIModelClient
 from models.generation import TaskSpec
+from services.advanced_component_pipeline import AdvancedComponentPipeline
+from services.advanced_component_pipeline.models import (
+    AdvancedPipelineOutput,
+    AdvancedScopeBrief,
+)
+from services.compact_dsl_a2ui_converter import convert_compact_dsl_to_a2ui
 from services.prompt_builder import PromptBuilder
-from services.protocol_registry import A2UIProtocolRegistry
+from services.protocol_registry import TERSE_DSL_NESTED2_PROFILE_ID, A2UIProtocolRegistry
 from services.source_artifact_repository import (
     SourceArtifactError,
     SourceArtifactRepository,
 )
+from services.terse_dsl_nested2_converter import convert_terse_dsl_nested2_to_a2ui
 from services.widget_generation_service import WidgetGenerationService
 from utils.upload_file_obs import UploadFileOSMS
 from ws_response_parser import parse_legacy_stream_content
@@ -105,6 +112,39 @@ def editable_artifact_storage(tmp_path, monkeypatch):
             mock_storage_dir=tmp_path / "mock_obs",
         ),
     )
+
+    async def generate_mixed(_pipeline, task_spec, _client, *_args, **_kwargs):
+        source = f'Column("card", Text({json.dumps(task_spec.userQuery)}, "title"));'
+        compiled = convert_terse_dsl_nested2_to_a2ui(
+            source,
+            size=task_spec.size,
+            protocol_profile=A2UIProtocolRegistry.read_design_protocol_profile(
+                TERSE_DSL_NESTED2_PROFILE_ID
+            ),
+        )
+        return AdvancedPipelineOutput(
+            component_id="ux-advanced-component-mixed",
+            style_id="family-weather-care-blue",
+            source_dsl=source,
+            source_format="a2ui",
+            ui_brief=AdvancedScopeBrief(
+                themeId="family-weather-care-blue",
+                advancedComponentIds=("WeatherOverview",),
+            ),
+            invocation={},
+            planner_mode="llm",
+            mapper_mode="llm",
+            route="hybrid-template",
+            confidence_bypassed=True,
+            raw_output=(
+                'Template("card@1", {}, '
+                f'SingleFocusLayout(Text({json.dumps(task_spec.userQuery)}, "title")));'
+            ),
+            effective_output=source,
+            compiled_a2ui=compiled,
+        )
+
+    monkeypatch.setattr(AdvancedComponentPipeline, "generate_mixed", generate_mixed)
     return tmp_path / "mock_obs"
 
 
@@ -205,13 +245,31 @@ async def test_design_compact_edit_uses_previous_design_token(
         created.artifactUrl,
     )
     assert source.design_token
+    archived_a2ui = convert_compact_dsl_to_a2ui(
+        source.design_token,
+        size=source.artifact.cardSpec["suggestSize"],
+        protocol_profile=A2UIProtocolRegistry.read_design_protocol_profile(
+            "design-compact-dsl"
+        ),
+    )
+    assert [json.loads(line) for line in archived_a2ui.splitlines()] == [
+        json.loads(line) for line in source.artifact.genui.splitlines()
+    ]
     prompts: list[list[dict[str, str]]] = []
 
     def generate_edit(_client, prompt, _profile=None, **_kwargs):
         prompts.append(prompt)
         return source.design_token
 
+    async def unexpected_template_route(*_args, **_kwargs):
+        pytest.fail("Compact edit must bypass the Template route")
+
     monkeypatch.setattr(A2UIModelClient, "generate", generate_edit)
+    monkeypatch.setattr(
+        AdvancedComponentPipeline,
+        "generate_mixed",
+        unexpected_template_route,
+    )
     edited = await service.generate_widget_card_compact_dsl(
         GenerateWidgetCardRequest(
             uid="user-a",

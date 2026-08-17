@@ -1,0 +1,27 @@
+{
+  "bundleFormat": "card-provider-bundle/1",
+  "providerId": "com.huawei.system-memory.cli",
+  "providerVersion": "1.0.0-poc",
+  "capabilities": [
+    {
+      "capabilityId": "GetSystemMemInfo",
+      "dataSchema": {
+        "path": "schemas/get-system-mem-info.schema.json",
+        "version": "system-memory-local/1"
+      },
+      "templates": ["ResourceUsageOverview@1"]
+    }
+  ],
+  "templates": [
+    {
+      "templateId": "ResourceUsageOverview@1",
+      "entry": "templates/resource-usage-overview.cardtpl",
+      "digest": "sha256:c53b018744b36fd193e0b80691d7e0c26e073fa0b4a30ca84a3cbffc24a53002"
+    }
+  ],
+  "compatibility": {
+    "templateLanguage": "cardtpl/1",
+    "catalogId": "ohos.a2ui.extended.catalog",
+    "a2uiWireVersion": "v0.9"
+  }
+}

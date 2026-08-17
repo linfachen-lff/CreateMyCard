@@ -75,15 +75,71 @@ def _is_sensitive_log_key(key: Any) -> bool:
     }
 
 
-def _sanitize_json_log_value(value: Any) -> Any:
+def _is_secret_log_key(key: Any) -> bool:
+    """Credentials and test authorization are never loggable, even in local mode."""
+    normalized = "".join(
+        character for character in str(key).casefold() if character.isalnum()
+    )
+    return normalized in {
+        "authorization",
+        "testauthorization",
+        "apikey",
+        "secretkey",
+        "token",
+        "accesstoken",
+    }
+
+
+def _is_business_log_key(key: Any) -> bool:
+    """Fields containing prompts, generated UI, user text, or model payloads."""
+    normalized = "".join(
+        character for character in str(key).casefold() if character.isalnum()
+    )
+    return normalized in {
+        "arguments",
+        "args",
+        "content",
+        "dataslice",
+        "description",
+        "genui",
+        "messages",
+        "prompt",
+        "rawoutput",
+        "request",
+        "requestbody",
+        "response",
+        "samplevalue",
+        "source",
+        "title",
+        "userquery",
+        "value",
+    }
+
+
+def _sanitize_secret_log_value(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json", exclude_none=True)
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_secret_log_value(item)
+            for key, item in value.items()
+            if not _is_secret_log_key(key)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_secret_log_value(item) for item in value]
+    return value
+
+
+def _sanitize_json_log_value(value: Any, *, remove_business: bool = False) -> Any:
     """递归移除用户标识和设备 odid。"""
     if hasattr(value, "model_dump"):
         value = value.model_dump(mode="json", exclude_none=True)
     if isinstance(value, dict):
         sanitized = {
-            key: _sanitize_json_log_value(item)
+            key: _sanitize_json_log_value(item, remove_business=remove_business)
             for key, item in value.items()
             if not _is_sensitive_log_key(key)
+            and (not remove_business or not _is_business_log_key(key))
         }
         location = value.get("loc")
         if isinstance(location, (list, tuple)) and any(
@@ -92,10 +148,16 @@ def _sanitize_json_log_value(value: Any) -> Any:
             sanitized.pop("input", None)
         return sanitized
     if isinstance(value, (list, tuple)):
-        return [_sanitize_json_log_value(item) for item in value]
+        return [
+            _sanitize_json_log_value(item, remove_business=remove_business)
+            for item in value
+        ]
     if isinstance(value, (set, frozenset)):
         return sorted(
-            (_sanitize_json_log_value(item) for item in value),
+            (
+                _sanitize_json_log_value(item, remove_business=remove_business)
+                for item in value
+            ),
             key=str,
         )
     return value
@@ -103,9 +165,14 @@ def _sanitize_json_log_value(value: Any) -> Any:
 
 def json_for_log(value: Any) -> str:
     """将结构化日志字段序列化为紧凑的标准 JSON。"""
-    log_value = value
-    if not get_settings().enable_sensitive_log_fields:
-        log_value = _sanitize_json_log_value(value)
+    log_value = _sanitize_secret_log_value(value)
+    settings = get_settings()
+    production_mode = settings.env.casefold() not in {"local", "test"}
+    if not settings.enable_sensitive_log_fields or production_mode:
+        log_value = _sanitize_json_log_value(
+            log_value,
+            remove_business=production_mode,
+        )
     return json.dumps(
         log_value,
         ensure_ascii=False,
@@ -545,9 +612,6 @@ def log_func(func_name: Optional[str] = None, log_args: bool = True, log_result:
         return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
 
     return decorator
-
-
-
 
 
 

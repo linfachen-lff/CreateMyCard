@@ -30,6 +30,8 @@ class TaskSpecBuilder:
         effective_data_capabilities: list[DataCapability],
         event_candidates: list[EventAction],
         asset_candidates: list[AssetCapability],
+        *,
+        include_all_output_fields: bool = False,
     ) -> TaskSpec:
         """按有效能力 outputSchema 构造传给 A2UI 模型的 TaskSpec。"""
         data_model_schema: dict[str, Any] = {"data": {}}
@@ -40,39 +42,56 @@ class TaskSpecBuilder:
             if capability is None:
                 continue
 
+            write_parts = parse_json_pointer(binding.writeResultTo)
+            if write_parts is None:
+                continue
+            if binding.previewData is not None:
+                self._set_by_parts(
+                    data_model_schema,
+                    tuple(write_parts),
+                    self._preview_schema(binding.previewData),
+                )
+                logger.info(
+                    f"{_MODULE} preview_data_applied capability_id={binding.capabilityId} "
+                    f"field_count={self._preview_leaf_count(binding.previewData)}"
+                )
+                continue
+
             requested_paths = binding.candidateOutputFields
             valid_fields: list[tuple[tuple[PathPart, ...], dict[str, Any]]] = []
             invalid_paths: list[str] = []
             seen: set[tuple[PathPart, ...]] = set()
 
-            for pointer in requested_paths:
-                resolved = self._resolve_leaf(capability.outputSchema, pointer)
-                if resolved is None:
-                    invalid_paths.append(pointer)
-                    continue
-                parts, leaf = resolved
-                if parts not in seen:
-                    seen.add(parts)
-                    valid_fields.append((parts, leaf))
+            if include_all_output_fields:
+                valid_fields = list(self._iter_valid_leaves(capability.outputSchema))
+            else:
+                for pointer in requested_paths:
+                    resolved = self._resolve_leaf(capability.outputSchema, pointer)
+                    if resolved is None:
+                        invalid_paths.append(pointer)
+                        continue
+                    parts, leaf = resolved
+                    if parts not in seen:
+                        seen.add(parts)
+                        valid_fields.append((parts, leaf))
 
             if invalid_paths:
                 logger.warning(
-                    f"{_MODULE} candidate_output_fields_ignored capability_id={binding.capabilityId} "
+                    f"{_MODULE} candidate_output_fields_ignored "
+                    f"capability_id={binding.capabilityId} "
                     f"invalid_paths={json_for_log(invalid_paths)}"
                 )
 
             # 未传投影或全部投影非法时，回退为该能力全部合法叶子，保证模型仍有可用结构。
-            if not requested_paths or not valid_fields:
+            if not include_all_output_fields and (not requested_paths or not valid_fields):
                 valid_fields = list(self._iter_valid_leaves(capability.outputSchema))
                 logger.info(
-                    f"{_MODULE} candidate_output_fields_fallback capability_id={binding.capabilityId} "
+                    f"{_MODULE} candidate_output_fields_fallback "
+                    f"capability_id={binding.capabilityId} "
                     f"reason={'missing' if not requested_paths else 'all_invalid'} "
                     f"field_count={len(valid_fields)}"
                 )
 
-            write_parts = parse_json_pointer(binding.writeResultTo)
-            if write_parts is None:
-                continue
             generated_sample_count = 0
             for relative_parts, leaf in valid_fields:
                 if "sampleValue" in leaf:
@@ -80,6 +99,12 @@ class TaskSpecBuilder:
                 else:
                     sample_value = DEFAULT_SAMPLE_VALUES[leaf["type"]]
                     generated_sample_count += 1
+                sample_value = self._binding_consistent_sample(
+                    binding,
+                    relative_parts,
+                    leaf,
+                    sample_value,
+                )
                 metadata = {
                     "type": leaf["type"],
                     "description": leaf["description"],
@@ -99,10 +124,59 @@ class TaskSpecBuilder:
             eventCandidates=event_candidates,
             dataModelSchema=data_model_schema,
             assetCandidates=[
-                {"id": item.id, "src": item.src, "description": item.description}
+                {
+                    "id": item.id,
+                    "src": item.src,
+                    "description": item.description,
+                    "sceneTags": item.sceneTags,
+                }
                 for item in asset_candidates
             ],
         )
+
+    @staticmethod
+    def _binding_consistent_sample(
+        binding: CandidateDataBinding,
+        relative_parts: tuple[PathPart, ...],
+        leaf: dict[str, Any],
+        fallback: Any,
+    ) -> Any:
+        """Keep trusted request identity fields consistent with generated preview facts."""
+        is_weather_district = (
+            binding.capabilityId == "ViewWeather"
+            and bool(relative_parts)
+            and relative_parts[-1] == "districtName"
+            and leaf.get("type") == "string"
+        )
+        if not is_weather_district:
+            return fallback
+        district = binding.arguments.get("districtName")
+        if not isinstance(district, str) or not district.strip():
+            return fallback
+        return district.strip()
+
+    def _preview_schema(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: self._preview_schema(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [self._preview_schema(value[0])] if value else []
+        data_type = "boolean" if isinstance(value, bool) else "number"
+        if value is None:
+            data_type = "null"
+        elif not isinstance(value, (bool, int, float)):
+            data_type = "string"
+        return {
+            "type": data_type,
+            "description": "Trusted request preview",
+            "sampleValue": deepcopy(value),
+        }
+
+    def _preview_leaf_count(self, value: Any) -> int:
+        if isinstance(value, dict):
+            return sum(self._preview_leaf_count(child) for child in value.values())
+        if isinstance(value, list):
+            return sum(self._preview_leaf_count(child) for child in value)
+        return 1
 
     def _resolve_leaf(
         self,

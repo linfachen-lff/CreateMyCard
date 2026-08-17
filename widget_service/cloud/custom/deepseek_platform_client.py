@@ -35,6 +35,7 @@ class DeepSeekPlatformClient:
         self.settings = settings
         self._secret_loader = secret_loader or sts_config.get_sts_config
         self._timestamp_provider = timestamp_provider or self._current_timestamp_ms
+        self.last_response_metadata: dict[str, Any] = {}
 
     async def generate(
         self,
@@ -42,6 +43,7 @@ class DeepSeekPlatformClient:
         request_context: ModelRequestContext,
     ) -> str:
         """发送一次非工具调用请求，并返回 finalText 内容。"""
+        self.last_response_metadata = {}
         self._validate_configuration()
         headers = self._build_headers(request_context)
         body = self._build_body(messages, request_context)
@@ -197,6 +199,17 @@ class DeepSeekPlatformClient:
                 code="MODEL_EMPTY_OUTPUT",
                 partial_output="".join(partial_texts),
             )
+        usage = result.get("usage") or data.get("usage") or result.get("tokenUsage")
+        finish_reason = (
+            result.get("finishReason")
+            or result.get("finish_reason")
+            or data.get("finishReason")
+            or data.get("finish_reason")
+        )
+        self.last_response_metadata = {
+            "usage": usage if isinstance(usage, dict) else None,
+            "finishReason": finish_reason if isinstance(finish_reason, str) else None,
+        }
         return text
 
     @staticmethod

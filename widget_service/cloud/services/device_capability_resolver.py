@@ -159,6 +159,7 @@ class DeviceCapabilityResolver:
                     arguments=binding.arguments,
                     writeResultTo=write_result_to,
                     candidateOutputFields=binding.candidateOutputFields,
+                    previewData=binding.previewData,
                 )
             )
             effective_capabilities.append(capability)

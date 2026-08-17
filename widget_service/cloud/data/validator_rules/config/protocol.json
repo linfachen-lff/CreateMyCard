@@ -1,7 +1,7 @@
 {
   "version": "v0.9",
   "catalogIds": [
-    "ohos.a2ui.extended.catalog.form"
+    "ohos.a2ui.extended.catalog"
   ],
   "messageOrder": ["createSurface", "updateComponents", "updateDataModel"],
   "messageRequiredFields": {

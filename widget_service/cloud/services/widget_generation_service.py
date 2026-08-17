@@ -2,9 +2,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import hashlib
 import inspect
+import json
+import secrets
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from anyio import to_thread
 
@@ -27,12 +30,23 @@ from custom.a2ui_model_client import (
     build_prompt_log_summary,
     require_generated_dsl,
 )
+from custom.deepseek_call_budget import DeepSeekCallBudgetExceeded
 from custom.model_runtime import ModelExecutionRuntime
 from models.artifact import ArtifactMeta, GenerationPlan, WidgetArtifact
 from models.generation import DEFAULT_WIDGET_SIZE, EventAction, ModelRequestContext, WidgetSize
+from services.advanced_component_pipeline import AdvancedComponentPipeline
+from services.advanced_component_pipeline.content_selectors import (
+    advanced_component_batch_data_admission,
+)
+from services.advanced_component_pipeline.pipeline import (
+    safe_generation_error_metadata,
+    weather_field_coverage,
+)
+from services.advanced_component_pipeline.scope_planner import TemplateRouteNotApplicable
 from services.artifact_store import ArtifactStore
 from services.capability_registry import CapabilityRegistry
 from services.card_spec_builder import CardSpecBuilder
+from services.compact_dsl_a2ui_converter import convert_a2ui_to_compact_dsl
 from services.device_capability_resolver import DeviceCapabilityResolver
 from services.edit_request_normalizer import EditRequestNormalizer
 from services.generation_pipeline import (
@@ -77,11 +91,7 @@ class WidgetGenerationService:
     async def widget_card_service(
         self,
         request: WidgetCardServiceRequest,
-    ) -> (
-        CapabilityOverviewResponse
-        | DataCapabilitySchemasResponse
-        | GenerateWidgetCardResponse
-    ):
+    ) -> CapabilityOverviewResponse | DataCapabilitySchemasResponse | GenerateWidgetCardResponse:
         """统一云侧卡片工具入口。
 
         入参：
@@ -125,9 +135,7 @@ class WidgetGenerationService:
             if request.operation == "generateWidgetCardCompactDsl":
                 return await self.generate_widget_card_compact_dsl(generation_request)
             if request.operation == "generateWidgetCardTerseDslNested2":
-                return await self.generate_widget_card_terse_dsl_nested2(
-                    generation_request
-                )
+                return await self.generate_widget_card_terse_dsl_nested2(generation_request)
             return await self.generate_widget_card_a2ui_form(generation_request)
 
         raise ValueError(f"Unknown operation: {request.operation}")
@@ -272,9 +280,7 @@ class WidgetGenerationService:
         stage_started_at = generation_started_at
         latency_by_stage: dict[str, float] = {}
         settings = get_settings()
-        generation_mode = (
-            "edit" if "sourceArtifactUrl" in request.model_fields_set else "create"
-        )
+        generation_mode = "edit" if "sourceArtifactUrl" in request.model_fields_set else "create"
         source_load_result = None
         source_url_hash = ""
         previous_design_token = None
@@ -302,9 +308,7 @@ class WidgetGenerationService:
                     request.sourceArtifactUrl or "",
                 )
                 if policy.stores_design_token:
-                    previous_design_token = self._require_source_design_token(
-                        source_load_result
-                    )
+                    previous_design_token = self._require_source_design_token(source_load_result)
                 normalized = EditRequestNormalizer().normalize_edit(
                     request,
                     source_load_result.artifact,
@@ -340,7 +344,7 @@ class WidgetGenerationService:
                     message="上一版卡片无法安全读取，本次修改未完成，原卡片不受影响。",
                     errorCode=exc.error_code.value,
                 )
-            except ValueError as exc:
+            except (RuntimeError, ValueError) as exc:
                 logger.error(
                     f"{_MODULE} source_artifact_normalization_failed "
                     f"error_code={ErrorCode.SOURCE_ARTIFACT_INVALID.value} error={exc}"
@@ -532,6 +536,11 @@ class WidgetGenerationService:
             request.description,
         )
         # TaskSpec 是给 A2UI 模型的输入，包含用户目标、有效能力、事件和素材。
+        batch_data_admission = bool(
+            request._widget_batch_request
+            and settings.enable_widget_batch_recording
+            and settings.enable_advanced_component_data_admission_bypass_for_batch
+        )
         task_spec = TaskSpecBuilder().build(
             request.userQuery,
             request.size,
@@ -539,21 +548,18 @@ class WidgetGenerationService:
             effective_data_capabilities,
             effective_events,
             asset_candidates,
+            include_all_output_fields=batch_data_admission,
         )
         logger.info(
             f"{_MODULE} card_and_task_spec_built data_binding_count={len(effective_bindings)} "
-            "card_spec="
-            f"{json_for_log(card_spec.model_dump(mode='json', exclude_none=True))} "
-            "task_spec="
-            f"{json_for_log(task_spec.model_dump(mode='json', exclude_none=True))} "
             "task_data_model_schema_keys="
-            f"{json_for_log(list(task_spec.dataModelSchema))}"
+            f"{json_for_log(list(task_spec.dataModelSchema))} "
+            f"event_count={len(task_spec.eventCandidates)} "
+            f"asset_count={len(task_spec.assetCandidates)}"
         )
         # Prompt 约束模型生成源 DSL；Processor 和 Validator 依次产出统一质量问题，再由策略决定门禁。
         if policy.stores_design_token:
-            design_system_prompt = A2UIProtocolRegistry.read_design_prompt(
-                policy.model_profile_id
-            )
+            design_system_prompt = A2UIProtocolRegistry.read_design_prompt(policy.model_profile_id)
             prompt = PromptBuilder().build_design_token(
                 task_spec,
                 design_system_prompt,
@@ -565,17 +571,14 @@ class WidgetGenerationService:
                 task_spec,
                 protocol_profile,
                 "；".join(f"{item.id}:{item.reason}" for item in removed),
-                previous_genui=(
-                    source_load_result.artifact.genui if source_load_result else None
-                ),
+                previous_genui=(source_load_result.artifact.genui if source_load_result else None),
             )
         prompt_log_summary = build_prompt_log_summary(
             prompt,
             settings.model_prompt_log_preview_chars,
         )
         logger.info(
-            f"{_MODULE} a2ui_prompt_built "
-            f"prompt_summary={json_for_log(prompt_log_summary)}"
+            f"{_MODULE} a2ui_prompt_built prompt_summary={json_for_log(prompt_log_summary)}"
         )
         latency_by_stage["specAndPrompt"] = self._elapsed_ms(stage_started_at)
         stage_started_at = time.perf_counter()
@@ -586,6 +589,123 @@ class WidgetGenerationService:
             request_context=self._resolve_model_request_context(request),
             operation_name=policy.operation,
         )
+        advanced_output = None
+        trusted_internal_asset_sources: tuple[str, ...] = ()
+        advanced_generation_fallback_used = False
+        strict_hybrid_mode = False
+        template_first_route_selected = False
+        model_start_notified = False
+
+        async def notify_model_start() -> None:
+            nonlocal model_start_notified
+            if before_model_call is None or model_start_notified:
+                return
+            await before_model_call(card_spec.suggestSize)
+            model_start_notified = True
+
+        uses_terse_template_route = policy.processor_kind == DslProcessorKind.TERSE_NESTED2
+        uses_compact_template_route = policy.template_first_on_create
+        uses_template_route = generation_mode == "create" and (
+            uses_terse_template_route or uses_compact_template_route
+        )
+        if uses_template_route:
+            if uses_terse_template_route and request.options.forceHybridTemplate:
+                self._authorize_hybrid_bypass(request)
+            strict_hybrid_mode = True
+            try:
+                await notify_model_start()
+                if uses_terse_template_route:
+                    with advanced_component_batch_data_admission(batch_data_admission):
+                        advanced_output = await AdvancedComponentPipeline().generate_mixed(
+                            task_spec,
+                            model_client,
+                            card_spec.model_dump(mode="json", exclude_none=True),
+                            allow_offline_fallback=False,
+                        )
+                else:
+                    advanced_output = await AdvancedComponentPipeline().generate_mixed(
+                        task_spec,
+                        model_client,
+                        card_spec.model_dump(mode="json", exclude_none=True),
+                        allow_offline_fallback=False,
+                        coverage_bindings=tuple(effective_bindings),
+                    )
+                    template_first_route_selected = True
+                trusted_internal_asset_sources = (
+                    advanced_output.trusted_internal_asset_sources
+                )
+            except TemplateRouteNotApplicable as exc:
+                strict_hybrid_mode = False
+                advanced_generation_fallback_used = True
+                logger.info(
+                    f"{_MODULE} compact_template_route_rejected "
+                    f"reason={type(exc).__name__} fallback=original_compact_flow"
+                )
+            except DeepSeekCallBudgetExceeded:
+                raise
+            except (RuntimeError, ValueError) as exc:
+                error_code, error_origin = safe_generation_error_metadata(exc)
+                logger.error(
+                    f"{_MODULE} strict_ux_mixed_generation_failed "
+                    f"exception_type={type(exc).__name__} "
+                    f"validation_error_code={error_code} "
+                    f"error_origin={error_origin} fallback=disabled "
+                    "business_payload_logged=false"
+                )
+                return GenerateWidgetCardResponse(
+                    status=GenerationStatus.FAILED,
+                    suggestSize=card_spec.suggestSize,
+                    message="混合模板生成失败，请稍后再试。",
+                    removedCapabilities=removed,
+                    errorCode=ErrorCode.A2UI_GENERATION_FAILED.value,
+                    effectiveCapabilities={
+                        "data": [item.id for item in effective_data_capabilities],
+                        "event": [
+                            item.model_dump(mode="json", exclude_none=True)
+                            for item in effective_events
+                        ],
+                        "asset": [item.id for item in asset_candidates],
+                    },
+                    generationFallbackUsed=False,
+                    modelSteps=model_client.model_step_records,
+                    batchDiagnostics={
+                        "failureStage": (
+                            str(model_client.model_step_records[-1].get("phase", ""))
+                            if model_client.model_step_records
+                            else "advanced-component-scope"
+                        ),
+                        "validationErrorCode": error_code,
+                        "errorOrigin": error_origin,
+                        "exceptionType": type(exc).__name__,
+                        "exceptionMessage": str(exc),
+                        "weatherFieldCoverage": weather_field_coverage(
+                            task_spec.userQuery,
+                            task_spec,
+                            "",
+                        ),
+                    },
+                )
+        advanced_source_dsl = advanced_output.source_dsl if advanced_output is not None else ""
+        if advanced_output is not None:
+            logger.info(
+                f"{_MODULE} advanced_route_resolved route={advanced_output.route} "
+                f"whole_card_confidence={advanced_output.whole_card_confidence} "
+                f"confidence_bypassed={advanced_output.confidence_bypassed} "
+                f"raw_length={len(advanced_output.raw_output)} "
+                f"effective_length={len(advanced_output.effective_output)} "
+                f"fallback_used={advanced_output.fallback_used} "
+                f"template_call_count={advanced_output.template_call_count} "
+                f"expanded_component_count={advanced_output.expanded_component_count}"
+            )
+        advanced_source_format = (
+            getattr(advanced_output, "source_format", "terse")
+            if advanced_output is not None
+            else "terse"
+        )
+        advanced_compiled_a2ui = (
+            advanced_output.compiled_a2ui if advanced_output is not None else ""
+        )
+        advanced_route = advanced_output.route if advanced_output is not None else ""
         model_protocol_profile = {
             "id": policy.model_profile_id,
             "format": policy.model_format,
@@ -618,11 +738,15 @@ class WidgetGenerationService:
         latest_processing_result = DslProcessingResult(source_dsl="")
 
         async def generate_source_dsl() -> str:
-            if before_model_call is not None:
-                await before_model_call(card_spec.suggestSize)
-            logger.info(
-                f"{_MODULE} model_source_generation_started operation={policy.operation}"
-            )
+            await notify_model_start()
+            if advanced_source_dsl:
+                logger.info(
+                    f"{_MODULE} advanced_component_template_generated "
+                    f"source_format={advanced_source_format} "
+                    f"source_length={len(advanced_source_dsl)}"
+                )
+                return advanced_source_dsl
+            logger.info(f"{_MODULE} model_source_generation_started operation={policy.operation}")
             result = await self._resolve_model_result(
                 model_client.generate(prompt, model_protocol_profile)
             )
@@ -632,16 +756,34 @@ class WidgetGenerationService:
             invalid_source_dsl: str,
             quality_errors: list[str],
         ) -> str:
-            nonlocal model_call_phase, quality_repair_attempt_count
+            nonlocal advanced_source_dsl, model_call_phase, quality_repair_attempt_count
             quality_repair_attempt_count += 1
+            if (
+                advanced_source_dsl
+                and invalid_source_dsl == advanced_source_dsl
+                and not strict_hybrid_mode
+            ):
+                logger.warning(
+                    f"{_MODULE} advanced_component_quality_fallback operation={policy.operation}"
+                )
+                advanced_source_dsl = ""
+                model_call_phase = "advanced-fallback"
+                fallback_prompt = PromptBuilder().build_design_token(
+                    task_spec,
+                    A2UIProtocolRegistry.read_design_prompt(policy.model_profile_id),
+                    policy.source_format,
+                    previous_design_token=None,
+                )
+                result = await self._resolve_model_result(
+                    model_client.generate(fallback_prompt, model_protocol_profile)
+                )
+                return require_generated_dsl(result)
             quality_error_payloads = [
                 item.to_prompt_payload() for item in latest_processing_result.errors
             ]
             if len(quality_error_payloads) != len(quality_errors):
                 raise RuntimeError("repair quality issue state is inconsistent")
-            quality_error_stages = sorted(
-                {item["stage"] for item in quality_error_payloads}
-            )
+            quality_error_stages = sorted({item["stage"] for item in quality_error_payloads})
             repair_prompt = PromptBuilder().build_repair(
                 prompt,
                 invalid_source_dsl,
@@ -668,7 +810,28 @@ class WidgetGenerationService:
 
         def evaluate_source_dsl_sync(source_dsl: str) -> list[str]:
             nonlocal latest_processing_result
-            processing_result = processor.process(source_dsl, processing_context)
+            is_hybrid_compilation = (
+                advanced_route == "hybrid-template"
+                and source_dsl == advanced_source_dsl
+                and bool(advanced_compiled_a2ui)
+            )
+            is_advanced_a2ui = (
+                bool(advanced_source_dsl)
+                and source_dsl == advanced_source_dsl
+                and advanced_source_format == "a2ui"
+            )
+            if is_hybrid_compilation:
+                processing_result = DslProcessingResult(
+                    source_dsl=source_dsl,
+                    standard_dsl=advanced_compiled_a2ui,
+                )
+            else:
+                active_processor = (
+                    get_dsl_processor(DslProcessorKind.STANDARD_A2UI)
+                    if is_advanced_a2ui
+                    else processor
+                )
+                processing_result = active_processor.process(source_dsl, processing_context)
             latest_processing_result = processing_result
             warnings = [
                 item.repair_message()
@@ -712,6 +875,7 @@ class WidgetGenerationService:
                 source_artifact_digest=(
                     source_load_result.artifact_digest if source_load_result else None
                 ),
+                trusted_internal_asset_sources=trusted_internal_asset_sources,
             )
             artifact_validator = ArtifactValidator()
             validation_errors = artifact_validator.validate(artifact, protocol_profile)
@@ -744,7 +908,11 @@ class WidgetGenerationService:
         async def evaluate_source_dsl(source_dsl: str) -> list[str]:
             return await to_thread.run_sync(evaluate_source_dsl_sync, source_dsl)
 
-        retry_on_validation_failure = settings.enable_validation_failure_retry
+        retry_on_validation_failure = (
+            settings.enable_validation_failure_retry and not template_first_route_selected
+        ) or (
+            bool(advanced_source_dsl) and not strict_hybrid_mode
+        )
         try:
             retry_result = await retry_controller.run(
                 generate_source_dsl,
@@ -762,8 +930,7 @@ class WidgetGenerationService:
             effective_capabilities = {
                 "data": [item.id for item in effective_data_capabilities],
                 "event": [
-                    item.model_dump(mode="json", exclude_none=True)
-                    for item in effective_events
+                    item.model_dump(mode="json", exclude_none=True) for item in effective_events
                 ],
                 "asset": [item.id for item in asset_candidates],
             }
@@ -782,6 +949,12 @@ class WidgetGenerationService:
                 removedCapabilities=removed,
                 errorCode=ErrorCode.A2UI_GENERATION_FAILED.value,
                 effectiveCapabilities=effective_capabilities,
+                modelSteps=model_client.model_step_records,
+                batchDiagnostics={
+                    "failureStage": model_call_phase,
+                    "exceptionType": type(exc).__name__,
+                    "exceptionMessage": str(exc),
+                },
             )
             self._log_generation_summary(
                 request,
@@ -837,6 +1010,11 @@ class WidgetGenerationService:
                 message="卡片生成过程中校验失败，请稍后再试。",
                 removedCapabilities=removed,
                 errorCode=ErrorCode.VALIDATION_FAILED.value,
+                modelSteps=model_client.model_step_records,
+                batchDiagnostics={
+                    "failureStage": failure_category,
+                    "validationErrors": errors,
+                },
             )
             latency_by_stage["total"] = self._elapsed_ms(generation_started_at)
             self._log_generation_summary(
@@ -864,10 +1042,57 @@ class WidgetGenerationService:
             )
         stage_started_at = time.perf_counter()
 
+        selected_template_id = None
+        if (
+            advanced_output is not None
+            and advanced_output.route == "whole-card-template"
+            and advanced_source_dsl
+            and source_dsl == advanced_source_dsl
+        ):
+            selected_template_id = advanced_output.component_id
+            task_spec = task_spec.model_copy(
+                update={"selectedTemplateId": selected_template_id}
+            )
+        logger.info(
+            f"{_MODULE} final_template_resolved "
+            f"selected_template_id={selected_template_id or 'none'}"
+        )
+
         # 工具3沿用非阻断校验；工具4、5仅在转换和严格校验策略通过后组装 artifact。
         design_token = None
         if policy.stores_design_token:
-            design_token = model_client.extract_genui_payload(source_dsl)
+            try:
+                if template_first_route_selected:
+                    design_token = convert_a2ui_to_compact_dsl(
+                        genui,
+                        size=card_spec.suggestSize,
+                    )
+                    archive_result = processor.process(design_token, processing_context)
+                    if archive_result.errors:
+                        messages = [item.repair_message() for item in archive_result.errors]
+                        raise ValueError("; ".join(messages))
+                    archived_messages = self._parse_render_messages(archive_result.standard_dsl)
+                    if archived_messages != self._parse_render_messages(genui):
+                        raise ValueError("A2UI-Compact archive round-trip changed standard A2UI")
+                else:
+                    design_token = model_client.extract_genui_payload(source_dsl)
+            except ValueError as exc:
+                logger.error(
+                    f"{_MODULE} compact_archive_conversion_failed "
+                    f"exception_type={type(exc).__name__} artifact_saved=false"
+                )
+                return GenerateWidgetCardResponse(
+                    status=GenerationStatus.FAILED,
+                    suggestSize=card_spec.suggestSize,
+                    message="卡片双协议归档校验失败，请稍后再试。",
+                    removedCapabilities=removed,
+                    errorCode=ErrorCode.VALIDATION_FAILED.value,
+                    modelSteps=model_client.model_step_records,
+                    batchDiagnostics={
+                        "failureStage": "compactArchive",
+                        "exceptionType": type(exc).__name__,
+                    },
+                )
         artifact = self._build_artifact(
             genui,
             card_spec.model_dump(mode="json", exclude_none=True),
@@ -885,6 +1110,7 @@ class WidgetGenerationService:
             source_artifact_digest=(
                 source_load_result.artifact_digest if source_load_result else None
             ),
+            trusted_internal_asset_sources=trusted_internal_asset_sources,
         )
         # ArtifactStore 当前是本地 mock/OBS TODO 入口，返回端侧可下载 URL 和摘要。
         logger.info(
@@ -909,6 +1135,23 @@ class WidgetGenerationService:
             f"artifact_url={artifact_save_result.artifactUrl} "
             f"removed_count={len(removed)} error_code={response_plan.errorCode}"
         )
+        batch_diagnostics: dict[str, Any] = {
+            "modelStepCount": len(model_client.model_step_records),
+            "qualityRepairCount": retry_result.retryCount,
+        }
+        if advanced_output is not None:
+            batch_diagnostics.update(
+                {
+                    "weatherFieldCoverage": advanced_output.invocation.get(
+                        "weatherFieldCoverage",
+                        {},
+                    ),
+                    "advancedPipelineEvidence": advanced_output.invocation.get(
+                        "batchEvidence",
+                        {},
+                    ),
+                }
+            )
         response = GenerateWidgetCardResponse(
             status=response_plan.status,
             artifactUrl=artifact_save_result.artifactUrl,
@@ -918,6 +1161,19 @@ class WidgetGenerationService:
             removedCapabilities=removed,
             errorCode=response_plan.errorCode,
             effectiveCapabilities=artifact.effectiveCapabilities,
+            renderMessages=self._parse_render_messages(artifact.genui),
+            templateCallCount=(
+                advanced_output.template_call_count if advanced_output is not None else 0
+            ),
+            expandedComponentCount=(
+                advanced_output.expanded_component_count if advanced_output is not None else 0
+            ),
+            generationFallbackUsed=(
+                advanced_generation_fallback_used
+                or (advanced_output.fallback_used if advanced_output is not None else False)
+            ),
+            modelSteps=model_client.model_step_records,
+            batchDiagnostics=batch_diagnostics,
         )
         latency_by_stage["total"] = self._elapsed_ms(generation_started_at)
         self._log_generation_summary(
@@ -935,15 +1191,47 @@ class WidgetGenerationService:
             source_artifact_digest=(
                 source_load_result.artifact_digest if source_load_result else ""
             ),
-            source_artifact_url_hash=(
-                source_load_result.url_hash if source_load_result else ""
-            ),
+            source_artifact_url_hash=(source_load_result.url_hash if source_load_result else ""),
         )
         return response
 
     @staticmethod
+    def _parse_render_messages(genui: str) -> list[dict]:
+        """解析已校验的标准 A2UI JSONL；兼容单测中的非协议占位 DSL。"""
+        messages: list[dict] = []
+        try:
+            for line in genui.splitlines():
+                if not line.strip():
+                    continue
+                message = json.loads(line)
+                if not isinstance(message, dict):
+                    return []
+                messages.append(message)
+        except json.JSONDecodeError:
+            return []
+        return messages
+
+    @staticmethod
     def _elapsed_ms(started_at: float) -> float:
         return round((time.perf_counter() - started_at) * 1000, 2)
+
+    @staticmethod
+    def _authorize_hybrid_bypass(request: GenerateWidgetCardRequest) -> bool:
+        """Allow confidence bypass only in explicitly enabled local/test environments."""
+        if not request.options.forceHybridTemplate:
+            return False
+        settings = get_settings()
+        environment_allowed = settings.env.casefold() in {"local", "test"}
+        configured_token = settings.hybrid_test_bypass_token
+        supplied_token = request.options.testAuthorization or ""
+        token_allowed = bool(configured_token) and secrets.compare_digest(
+            configured_token,
+            supplied_token,
+        )
+        if not settings.enable_hybrid_test_bypass or not environment_allowed or not token_allowed:
+            raise ValueError("Hybrid confidence bypass is not authorized")
+        logger.warning(f"{_MODULE} hybrid_confidence_bypass_authorized")
+        return True
 
     @staticmethod
     async def _resolve_model_result(value: str | Awaitable[str]) -> str:
@@ -990,9 +1278,7 @@ class WidgetGenerationService:
         """输出一次生成请求的统一观测字段，不记录 uid 和原始设备标识。"""
         candidate_capabilities = {
             "data": [item.capabilityId for item in request.candidateDataBindings or []],
-            "event": [
-                item.capabilityId for item in request.candidateEventCandidates or []
-            ],
+            "event": [item.capabilityId for item in request.candidateEventCandidates or []],
             "asset": list(request.candidateAssetIds or []),
         }
         removed_capabilities = [
@@ -1081,6 +1367,7 @@ class WidgetGenerationService:
             design_profile_id=selection.design_profile_id,
             validation_failure_blocking=True,
             stores_design_token=True,
+            template_first_on_create=True,
         )
         if before_model_call is None:
             return await self._generate_widget_card_with_policy(request, policy)
@@ -1119,7 +1406,7 @@ class WidgetGenerationService:
             model_profile_id=TERSE_DSL_NESTED2_PROFILE_ID,
             model_format=TERSE_DSL_NESTED2_PROFILE_ID,
             design_profile_id=TERSE_DSL_NESTED2_PROFILE_ID,
-            supports_dynamic_capabilities=False,
+            supports_dynamic_capabilities=True,
             validation_failure_blocking=True,
             stores_design_token=True,
         )
@@ -1175,6 +1462,11 @@ class WidgetGenerationService:
         """用目标接口对应 Processor 验证上一轮 Token，防止跨源格式编辑。"""
         if source is None:
             return False
+        if (
+            get_settings().advanced_component_output_format == "a2ui"
+            and design_token.strip() == source.artifact.genui.strip()
+        ):
+            return True
         source_card_spec = source.artifact.cardSpec
         source_size = source_card_spec.get("suggestSize")
         if not isinstance(source_size, str) or not source_size:
@@ -1188,7 +1480,9 @@ class WidgetGenerationService:
         )
         processor = get_dsl_processor(policy.processor_kind)
         result = await to_thread.run_sync(processor.process, design_token, context)
-        return not result.errors
+        if not result.errors:
+            return True
+        return False
 
     @staticmethod
     def _policy_unsupported_response(
@@ -1273,6 +1567,7 @@ class WidgetGenerationService:
             candidates.append(
                 EventAction(
                     id=candidate.capabilityId,
+                    displayLabel=candidate.action.displayLabel,
                     call=candidate.action.call,
                     args=candidate.action.args,
                 )
@@ -1346,6 +1641,7 @@ class WidgetGenerationService:
         artifact_id: str | None = None,
         generation_mode: str = "create",
         source_artifact_digest: str | None = None,
+        trusted_internal_asset_sources: tuple[str, ...] = (),
     ) -> WidgetArtifact:
         """组装完整 artifact。
 
@@ -1364,6 +1660,7 @@ class WidgetGenerationService:
         - artifact_id：本轮不可变产物 UUID。
         - generation_mode：create 或 edit。
         - source_artifact_digest：编辑来源摘要；首次生成为空。
+        - trusted_internal_asset_sources：混合模板实际使用的服务内置可信资源路径。
         出参：完整 WidgetArtifact。
         """
         # artifact 是端侧下载后的唯一交付物，里面同时包含 DSL、CardSpec、TaskSpec 和能力裁决结果。
@@ -1387,8 +1684,11 @@ class WidgetGenerationService:
                 "event": [
                     item.model_dump(mode="json", exclude_none=True) for item in event_candidates
                 ],
-                # asset 只暴露素材 ID，端侧从资源包或素材注册表解析具体文件。
-                "asset": [item.id for item in asset_candidates],
+                # 请求素材暴露 ID；混合模板内置素材仅暴露实际引用的可信路径。
+                "asset": [
+                    *[item.id for item in asset_candidates],
+                    *trusted_internal_asset_sources,
+                ],
             },
             removedCapabilities=removed,
             generationPlan=GenerationPlan(

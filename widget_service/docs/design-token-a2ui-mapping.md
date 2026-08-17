@@ -12,7 +12,7 @@ HarmonyOS A2UI Form NDJSON。
 - 上游参考快照：
   `a2ui-form-hmos-design-tokens(2).md`，接收日期为 2026-07-28
 - A2UI catalog：
-  `ohos.a2ui.extended.catalog.form`
+  `ohos.a2ui.extended.catalog`
 
 本文档是**转换层实现契约**，不替代生成提示词。提示词由提示词维护方独立更新。
 
@@ -298,4 +298,4 @@ Compact DSL 的 `threshold` 由转换层消费，不写入 A2UI `styles`，避�
 - Checkbox 新增 `design:"default"`。
 - 补齐上游 Light 模式语义颜色。
 - 明确 `segmented-bar` 和 `threshold-bar` 的标准 A2UI 降级行为。
-- 转换后的 catalog 固定为 `ohos.a2ui.extended.catalog.form`。
+- 转换后的 catalog 固定为 `ohos.a2ui.extended.catalog`。

@@ -98,6 +98,19 @@
 | `resources/base/media/icon_left.svg` | 样式：黑色实心圆形徽标，内部以白色显示大写 L，源文件语义为左耳机，建议保留原色；适用：左耳、左声道、左侧耳机电量。 |
 | `resources/base/media/icon_music.svg` | 样式：黑色实心双音符图标，内部使用白色分隔形成音符结构，建议保留原色；适用：音乐、歌曲、歌单或音频内容。 |
 | `resources/base/media/icon_right.svg` | 样式：黑色实心圆形徽标，内部以白色显示大写 R，源文件语义为右耳机，建议保留原色；适用：右耳、右声道、右侧耳机电量。 |
+| `resources/base/media/phone_fill_1.svg` | 电话实心图标（变体），黑色，图形为听筒加信号波形，适用场景：来电接听、通话状态展示 |
+| `resources/base/media/icon_time.svg` | 时间图标，适用场景：当下日程 |
+| `resources/base/media/icon_call.svg` | 电话图标，适用场景：亲人关怀 |
+| `resources/base/media/icon_charge.svg` | 充电/闪电图标，适用场景：低电模式 |
+| `resources/base/media/icon_clear.svg` | 清除图标，适用场景：清理无忧 |
+| `resources/base/media/icon_time1.svg` | 时间图标，适用场景：雨天打车 |
+| `resources/base/media/icon_alarm_clock.svg` | 闹钟图标，适用场景：当下日程 |
+| `resources/base/media/icon_electricity.svg` | 电池图标，适用场景：低电模式 |
+| `resources/base/media/icon_alarm_clock1.svg` | 闹钟图标，适用场景：睡眠监督 |
+| `resources/base/media/icon_remind.svg` | 提醒图标，适用场景：睡眠监督 |
+| `resources/base/media/icon_sleep.svg` | 睡眠图标，适用场景：睡眠监督 |
+| `resources/base/media/icon_schedule2.svg` | 日程图标，适用场景：当下日程 |
+| `resources/base/media/icon_like.svg` | 收藏/心形图标，适用场景：戴耳机播控 |
 
 ## 布局规则
 

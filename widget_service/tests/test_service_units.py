@@ -39,6 +39,7 @@ from api.schemas import (
     CapabilityOverviewRequest,
     DataCapabilitySchemasRequest,
     GenerateWidgetCardRequest,
+    GenerateWidgetCardResponse,
 )
 from api.routes import (
     _build_plugin_stream_response,
@@ -74,6 +75,12 @@ from models.service import (
     WidgetWebSocketResultMessage,
 )
 from services.artifact_store import ArtifactStore
+from services.advanced_component_pipeline import AdvancedComponentPipeline
+from services.advanced_component_pipeline.models import (
+    AdvancedPipelineOutput,
+    AdvancedScopeBrief,
+)
+from services.advanced_component_pipeline.scope_planner import TemplateRouteNotApplicable
 from custom.a2ui_model_client import (
     A2UIModelClient,
     A2UIModelGenerationError,
@@ -81,7 +88,7 @@ from custom.a2ui_model_client import (
     build_prompt_log_summary,
     require_generated_dsl,
 )
-from custom.llmclient import LLMClientOptions
+from custom.llmclient import LLMClientOptions, _http_request_payload
 from custom.mep_model_transport import MepModelTransport, PredictEventDecoder
 from custom.model_transport import ModelTransportError
 from custom.model_runtime import ModelExecutionRuntime, _generate_with_llmclient
@@ -141,6 +148,9 @@ Column("card",
     assert "width" not in messages[0]["createSurface"]
     assert "height" not in messages[0]["createSurface"]
     components = messages[1]["updateComponents"]["components"]
+    root = next(item for item in components if item["id"] == "root")
+    assert root["styles"]["width"] == "matchParent"
+    assert root["styles"]["height"] == "matchParent"
     assert [item["id"] for item in components] == [
         "root",
         "root_0",
@@ -175,16 +185,38 @@ Column("card",
   Text("晴 26℃", "success")
 );
 """
-    prompts: list[list[dict[str, str]]] = []
     saved_genui: list[str] = []
     selected_conversion_profiles: list[str] = []
     original_protocol_reader = A2UIProtocolRegistry.read_design_protocol_profile
 
-    def generate_nested2(_client, prompt, protocol_profile):
-        prompts.append(prompt)
-        assert protocol_profile["id"] == "terse-dsl-nested-2"
-        assert protocol_profile["format"] == "terse-dsl-nested-2"
-        return source
+    async def generate_mixed(_pipeline, _task_spec, _client, *_args, **_kwargs):
+        profile = A2UIProtocolRegistry.read_design_protocol_profile("terse-dsl-nested-2")
+        compiled = convert_terse_dsl_nested2_to_a2ui(
+            source,
+            size="2x4",
+            protocol_profile=profile,
+        )
+        return AdvancedPipelineOutput(
+            component_id="ux-advanced-component-mixed",
+            style_id="family-weather-care-blue",
+            source_dsl=source,
+            source_format="a2ui",
+            ui_brief=AdvancedScopeBrief(
+                themeId="family-weather-care-blue",
+                advancedComponentIds=("WeatherOverview",),
+            ),
+            invocation={},
+            planner_mode="llm",
+            mapper_mode="llm",
+            route="hybrid-template",
+            confidence_bypassed=True,
+            raw_output='Template("card@1", {}, SingleFocusLayout(Text("静态天气", "body")));',
+            effective_output=source,
+            compiled_a2ui=compiled,
+        )
+
+    async def old_generate_must_not_run(*_args, **_kwargs):
+        raise AssertionError("fifth create route must bypass the legacy entry")
 
     def save_artifact(_store, artifact):
         saved_genui.append(artifact.genui)
@@ -199,14 +231,15 @@ Column("card",
         selected_conversion_profiles.append(profile_id)
         return {
             "version": "v0.9",
-            "catalogId": "ohos.a2ui.extended.catalog.form",
+            "catalogId": "ohos.a2ui.extended.catalog",
             "sizes": {
                 "2x2": {"width": 138, "height": 138},
                 "2x4": {"width": 298, "height": 138},
             },
         }
 
-    monkeypatch.setattr(A2UIModelClient, "generate", generate_nested2)
+    monkeypatch.setattr(AdvancedComponentPipeline, "generate_mixed", generate_mixed)
+    monkeypatch.setattr(AdvancedComponentPipeline, "generate", old_generate_must_not_run)
     monkeypatch.setattr(
         PromptBuilder,
         "build_design_compact",
@@ -228,9 +261,8 @@ Column("card",
 
     assert response.status == GenerationStatus.SUCCESS
     assert response.artifactUrl == "https://artifact.test/nested2"
-    assert "TerseDSL-Nested-2" in prompts[0][0]["content"]
     assert '"createSurface"' in saved_genui[0]
-    assert selected_conversion_profiles == ["terse-dsl-nested-2"]
+    assert selected_conversion_profiles == ["terse-dsl-nested-2", "terse-dsl-nested-2"]
     create_surface = json_module.loads(saved_genui[0].splitlines()[0])["createSurface"]
     assert "width" not in create_surface
     assert "height" not in create_surface
@@ -255,7 +287,22 @@ def test_terse_dsl_nested2_prompt_builder_uses_terse_system_prompt():
 
 
 @pytest.mark.asyncio
-async def test_terse_dsl_nested2_rejects_dynamic_requests():
+async def test_terse_dsl_nested2_accepts_dynamic_requests(monkeypatch):
+    policies = []
+
+    async def generate_with_policy(_service, request, policy, **_kwargs):
+        policies.append(policy)
+        return GenerateWidgetCardResponse(
+            status=GenerationStatus.SUCCESS,
+            suggestSize=request.size or "2x2",
+            message="ok",
+        )
+
+    monkeypatch.setattr(
+        WidgetGenerationService,
+        "_generate_widget_card_with_policy",
+        generate_with_policy,
+    )
     dynamic_request = GenerateWidgetCardRequest(
         uid="test-user",
         prdVer=APP_VERSION,
@@ -273,12 +320,10 @@ async def test_terse_dsl_nested2_rejects_dynamic_requests():
     )
     service = WidgetGenerationService()
 
-    dynamic_response = await service.generate_widget_card_terse_dsl_nested2(
-        dynamic_request
-    )
+    dynamic_response = await service.generate_widget_card_terse_dsl_nested2(dynamic_request)
 
-    assert dynamic_response.status == GenerationStatus.UNSUPPORTED
-    assert dynamic_response.errorCode == "PROTOCOL_CAPABILITY_UNSUPPORTED"
+    assert dynamic_response.status == GenerationStatus.SUCCESS
+    assert policies[0].supports_dynamic_capabilities is True
 
 
 def test_websocket_handler_runs_sync_service_in_threadpool():
@@ -311,10 +356,7 @@ def test_websocket_handler_runs_sync_service_in_threadpool():
                 errorCode="FAILED",
                 error={"message": "failed"},
             ),
-            (
-                "工具执行过程中发生未分类的服务异常，本次调用未成功完成，建议稍后重试。"
-                "报错信息如下"
-            ),
+            ("工具执行过程中发生未分类的服务异常，本次调用未成功完成，建议稍后重试。报错信息如下"),
         ),
     ],
 )
@@ -382,6 +424,9 @@ def test_anyio_thread_pool_uses_configured_capacity(monkeypatch):
     assert Settings(_env_file=None).model_failure_retry_jitter_ratio == 0.2
     assert Settings(_env_file=None).model_prompt_log_preview_chars == 30
     assert Settings(_env_file=None).validation_failure_max_repair_attempts == 1
+    assert (
+        Settings(_env_file=None).enable_advanced_component_data_admission_bypass_for_batch is False
+    )
     settings = get_settings()
     monkeypatch.setattr(settings, "anyio_thread_pool_tokens", 80)
 
@@ -395,7 +440,12 @@ def test_anyio_thread_pool_uses_configured_capacity(monkeypatch):
 
 def test_llmclient_settings_are_complete_and_keep_previous_defaults():
     settings = Settings(_env_file=None)
-    options = LLMClientOptions()
+    # 显式传入默认值，避免开发机 .env 中的真实密钥污染默认配置回归。
+    options = LLMClientOptions(
+        api_key=settings.deepseek_api_key,
+        model=settings.deepseek_model,
+        ws_url=settings.deepseek_ws_url,
+    )
 
     assert settings.deepseek_api_key == "AccessService"
     assert settings.deepseek_model == "deepseek-ai/DeepSeek-V4-Flash"
@@ -405,7 +455,7 @@ def test_llmclient_settings_are_complete_and_keep_previous_defaults():
     assert settings.deepseek_temperature == 0.7
     assert settings.deepseek_top_p == 0.9
     assert settings.deepseek_top_k == 1
-    assert settings.deepseek_max_tokens == 128_000
+    assert settings.deepseek_max_tokens == 8_192
     assert settings.deepseek_enable_thinking is False
     assert settings.deepseek_include_usage is True
     assert settings.deepseek_debug_usage is True
@@ -413,6 +463,22 @@ def test_llmclient_settings_are_complete_and_keep_previous_defaults():
     assert options.api_key == settings.deepseek_api_key
     assert options.model == settings.deepseek_model
     assert options.ws_url == settings.deepseek_ws_url
+
+
+def test_llmclient_http_payload_explicitly_controls_deepseek_thinking():
+    messages = [{"role": "user", "content": "return JSON"}]
+    disabled = _http_request_payload(
+        LLMClientOptions(enable_thinking=False),
+        messages,
+    )
+    enabled = _http_request_payload(
+        LLMClientOptions(enable_thinking=True),
+        messages,
+    )
+
+    assert disabled["thinking"] == {"type": "disabled"}
+    assert enabled["thinking"] == {"type": "enabled"}
+    assert disabled["messages"] is messages
 
 
 @pytest.mark.parametrize(
@@ -491,15 +557,11 @@ def test_websocket_handler_sets_request_id_to_logger_context():
     出参：无；通过源码顺序断言保证首条请求日志及后续线程池日志都携带 requestId。
     """
     routes_source = (CLOUD_ROOT / "api" / "routes.py").read_text(encoding="utf-8")
-    set_context_position = routes_source.index(
-        'task_logger.set_session_id(request_id or "None")'
-    )
+    set_context_position = routes_source.index('task_logger.set_session_id(request_id or "None")')
     raw_context_position = routes_source.index(
         'task_logger.set_session_id(raw_request_id or "None")'
     )
-    raw_request_log_position = routes_source.index(
-        "widget_operation_ws_raw_request_received"
-    )
+    raw_request_log_position = routes_source.index("widget_operation_ws_raw_request_received")
     request_log_position = routes_source.index("widget_operation_ws_payload_received")
 
     assert "from app.logger import json_for_log, logger, task_logger" in routes_source
@@ -508,28 +570,32 @@ def test_websocket_handler_sets_request_id_to_logger_context():
 
 
 def test_raw_payload_request_id_uses_session_and_interaction_id():
-    assert _request_id_from_raw_payload(
-        {
-            "session": {
-                "sessionId": "session-001",
-                "interactionId": "round-003",
+    assert (
+        _request_id_from_raw_payload(
+            {
+                "session": {
+                    "sessionId": "session-001",
+                    "interactionId": "round-003",
+                }
             }
-        }
-    ) == "session-001&round-003"
-    assert _request_id_from_raw_payload({"requestId": "legacy-request"}) == (
-        "legacy-request"
+        )
+        == "session-001&round-003"
     )
+    assert _request_id_from_raw_payload({"requestId": "legacy-request"}) == ("legacy-request")
 
 
 def test_json_for_log_uses_standard_json_syntax():
-    assert json_for_log(
-        {
-            "name": "运动健康",
-            "enabled": True,
-            "missing": None,
-            "items": ["a"],
-        }
-    ) == '{"name":"运动健康","enabled":true,"missing":null,"items":["a"]}'
+    assert (
+        json_for_log(
+            {
+                "name": "运动健康",
+                "enabled": True,
+                "missing": None,
+                "items": ["a"],
+            }
+        )
+        == '{"name":"运动健康","enabled":true,"missing":null,"items":["a"]}'
+    )
 
 
 def test_generation_summary_contains_required_observability_fields(monkeypatch):
@@ -645,10 +711,7 @@ def _ids_installed_apps_payload(*bundle_names: str) -> dict:
         "nameSpaces": [
             {
                 "dataType": "t_ids_kv_ohos_installed_apps",
-                "values": [
-                    {"data": {"bundleName": bundle_name}}
-                    for bundle_name in bundle_names
-                ],
+                "values": [{"data": {"bundleName": bundle_name}} for bundle_name in bundle_names],
             }
         ]
     }
@@ -769,9 +832,7 @@ def test_ids_query_builds_structured_request_and_signature(monkeypatch):
     assert client.build_ids_sign(timestamp_ms=1000) == f"access;1000;{expected_sign}"
     assert request.headers.model_dump(by_alias=True)["Content-Type"] == "application/json"
     query_log = next(
-        message
-        for message in log_messages
-        if "ids_device_capability_query_built" in message
+        message for message in log_messages if "ids_device_capability_query_built" in message
     )
     assert 'body={"requestId":"ids-unit-1"' in query_log
     assert "callingUid" not in query_log
@@ -802,9 +863,7 @@ def test_ids_query_uses_default_odid_when_device_odid_missing():
 def test_ids_mock_enabled_reads_existing_file_without_remote(tmp_path, monkeypatch):
     mock_path = tmp_path / "ids_mock.json"
     mock_path.write_text(
-        json_module.dumps(
-            _ids_installed_apps_payload("com.huawei.hmos.health.core")
-        ),
+        json_module.dumps(_ids_installed_apps_payload("com.huawei.hmos.health.core")),
         encoding="utf-8",
     )
     client = IDSClient(mock_response_path=mock_path)
@@ -882,9 +941,7 @@ def test_ids_mock_disabled_ignores_existing_file_and_queries_remote(
     remote_payload = _ids_installed_apps_payload("com.huawei.hmos.weather")
     mock_path = tmp_path / "ids_mock.json"
     mock_path.write_text(
-        json_module.dumps(
-            _ids_installed_apps_payload("com.huawei.hmos.health.core")
-        ),
+        json_module.dumps(_ids_installed_apps_payload("com.huawei.hmos.health.core")),
         encoding="utf-8",
     )
 
@@ -1073,7 +1130,7 @@ def _write_protocol_ranges(root: Path, ranges: list[dict]) -> None:
             json_module.dumps(
                 {
                     "version": "v0.9",
-                    "catalogId": "ohos.a2ui.extended.catalog.form",
+                    "catalogId": "ohos.a2ui.extended.catalog",
                     "sizes": {
                         "2x2": {"width": 140, "height": 140},
                         "2x4": {"width": 300, "height": 140},
@@ -1359,10 +1416,7 @@ def test_data_capability_registry_declares_leaf_samples_and_known_package_depend
         "GetPhoneBatteryInfo",
         "GetHealthAndSportSummary",
     ]
-    assert all(
-        set(item.dependencies.model_dump()) == {"requiredPackages"}
-        for item in capabilities
-    )
+    assert all(set(item.dependencies.model_dump()) == {"requiredPackages"} for item in capabilities)
 
     weather = registry.get_data_capability("ViewWeather")
     calendar = registry.get_data_capability("GetCalendarEvents")
@@ -1372,20 +1426,22 @@ def test_data_capability_registry_declares_leaf_samples_and_known_package_depend
     assert weather.dependencies.requiredPackages == [
         RequiredPackage(packageName="com.huawei.hmos.weather")
     ]
-    assert weather.outputSchema["properties"]["current"]["properties"][
-        "temperatureText"
-    ]["sampleValue"] == "29°C"
+    assert (
+        weather.outputSchema["properties"]["current"]["properties"]["temperatureText"][
+            "sampleValue"
+        ]
+        == "29°C"
+    )
 
     assert calendar is not None
     assert calendar.dependencies.requiredPackages == [
         RequiredPackage(packageName="com.huawei.hmos.calendar")
     ]
-    assert calendar.outputSchema["properties"]["events"]["items"]["properties"]["title"][
-        "sampleValue"
-    ] == "项目例会"
-    calendar_title = calendar.outputSchema["properties"]["events"]["items"]["properties"][
-        "title"
-    ]
+    assert (
+        calendar.outputSchema["properties"]["events"]["items"]["properties"]["title"]["sampleValue"]
+        == "项目例会"
+    )
+    calendar_title = calendar.outputSchema["properties"]["events"]["items"]["properties"]["title"]
     assert calendar_title["description"] == (
         "日程标题，例如“咪咕视频《西班牙 VS 奥地利》”或航班、车次信息。"
     )
@@ -1414,19 +1470,12 @@ def test_data_capability_output_schema_is_self_contained():
         return [schema]
 
     assert not (
-        CLOUD_ROOT
-        / "data"
-        / "capabilities"
-        / REGISTRY_VERSION_6
-        / "data_model_mappings.json"
+        CLOUD_ROOT / "data" / "capabilities" / REGISTRY_VERSION_6 / "data_model_mappings.json"
     ).exists()
     for capability in capabilities:
         leaves = leaf_nodes(capability.outputSchema)
         assert leaves
-        assert all(
-            {"type", "description", "sampleValue"}.issubset(leaf)
-            for leaf in leaves
-        )
+        assert all({"type", "description", "sampleValue"}.issubset(leaf) for leaf in leaves)
 
 
 def test_event_capability_registry_uses_package_dependencies_only():
@@ -1434,10 +1483,7 @@ def test_event_capability_registry_uses_package_dependencies_only():
     capabilities = registry.list_event_capabilities()
 
     assert capabilities
-    assert all(
-        set(item.dependencies.model_dump()) == {"requiredPackages"}
-        for item in capabilities
-    )
+    assert all(set(item.dependencies.model_dump()) == {"requiredPackages"} for item in capabilities)
     health_events = {
         item.id: item
         for item in capabilities
@@ -1555,12 +1601,7 @@ def _sample_data_from_schema(schema):
 def test_cloud_registry_covers_offline_skill_capability_inventory():
     """防止离线 Skill 新增能力后，云侧版本目录继续使用不完整的旧快照。"""
     repository_root = PROJECT_ROOT.parent
-    offline_reference = (
-        repository_root
-        / "skills"
-        / "harmony-card-generation-offline"
-        / "reference"
-    )
+    offline_reference = repository_root / "skills" / "harmony-card-generation-offline" / "reference"
     data_directory = offline_reference / "capability" / "data-capability"
     offline_data_ids = set()
     offline_data_samples = {}
@@ -1570,9 +1611,7 @@ def test_cloud_registry_covers_offline_skill_capability_inventory():
         capability_text = path.read_text(encoding="utf-8")
         manifest_text = capability_text.split("```json", 1)[1]
         id_line = next(
-            line.strip()
-            for line in manifest_text.splitlines()
-            if line.strip().startswith('"id":')
+            line.strip() for line in manifest_text.splitlines() if line.strip().startswith('"id":')
         )
         capability_id = id_line.split('"')[3]
         offline_data_ids.add(capability_id)
@@ -1587,9 +1626,7 @@ def test_cloud_registry_covers_offline_skill_capability_inventory():
     offline_events = set()
     for capability in event_manifest["capabilities"]:
         for target in capability["supportedTargets"]:
-            descriptions = [
-                page["description"] for page in target.get("pages", [target])
-            ]
+            descriptions = [page["description"] for page in target.get("pages", [target])]
             offline_events.update(
                 (
                     capability["functionCall"],
@@ -1599,9 +1636,7 @@ def test_cloud_registry_covers_offline_skill_capability_inventory():
                 for description in descriptions
             )
 
-    asset_text = (
-        offline_reference / "design" / "asset-library.md"
-    ).read_text(encoding="utf-8")
+    asset_text = (offline_reference / "design" / "asset-library.md").read_text(encoding="utf-8")
     offline_assets = {}
     for line in asset_text.splitlines():
         if not line.startswith("| `resources/base/media/"):
@@ -1624,9 +1659,7 @@ def test_cloud_registry_covers_offline_skill_capability_inventory():
         (item.actionTemplate.call, item.targetScene, item.description)
         for item in registry.list_event_capabilities()
     }
-    cloud_assets = {
-        item.src: item.description for item in registry.list_asset_capabilities()
-    }
+    cloud_assets = {item.src: item.description for item in registry.list_asset_capabilities()}
     media_directory = repository_root / "resources" / "base" / "media"
     media_sources = {
         path.relative_to(repository_root).as_posix()
@@ -1638,7 +1671,8 @@ def test_cloud_registry_covers_offline_skill_capability_inventory():
     assert cloud_data_samples == offline_data_samples
     assert cloud_events == offline_events
     assert cloud_assets == offline_assets
-    assert media_sources == set(offline_assets)
+    # startIcon.png is a repository-level shell asset, not an A2UI model candidate.
+    assert media_sources - {"resources/base/media/startIcon.png"} == set(offline_assets)
 
 
 def test_cloud_asset_registry_matches_online_skill_allowlist():
@@ -1694,9 +1728,7 @@ def test_data_capability_allows_missing_leaf_sample_value():
         description="缺少样例",
         outputSchema={
             "type": "object",
-            "properties": {
-                "value": {"type": "string", "description": "展示值"}
-            },
+            "properties": {"value": {"type": "string", "description": "展示值"}},
         },
     )
 
@@ -1718,9 +1750,7 @@ def test_capability_dependencies_ignore_legacy_fields_and_keep_package_names():
         ],
     )
 
-    assert dependencies.model_dump() == {
-        "requiredPackages": [{"packageName": "com.example.app"}]
-    }
+    assert dependencies.model_dump() == {"requiredPackages": [{"packageName": "com.example.app"}]}
 
 
 def test_event_capability_accepts_legacy_dependency_metadata():
@@ -1902,9 +1932,7 @@ def test_ids_installation_filter_only_applies_to_configured_health_package(
 def test_package_dependency_filter_ignores_rom_version():
     registry = CapabilityRegistry(version=REGISTRY_VERSION_6)
     resolver = DeviceCapabilityResolver(registry)
-    ids_state = IDSDeviceCapabilityState(
-        installed_apps={"com.huawei.hmos.health.core"}
-    )
+    ids_state = IDSDeviceCapabilityState(installed_apps={"com.huawei.hmos.health.core"})
     available, _, _, removed = resolver.resolve_capability_overview(
         DeviceContext(romVersion="1"),
         ids_state,
@@ -1917,9 +1945,7 @@ def test_package_dependency_filter_ignores_rom_version():
 def test_ids_installation_filter_default_scope_is_health_only():
     settings = Settings()
 
-    assert settings.ids_installation_filter_package_names == (
-        "com.huawei.hmos.health.core",
-    )
+    assert settings.ids_installation_filter_package_names == ("com.huawei.hmos.health.core",)
 
 
 def test_empty_ids_installation_filter_scope_skips_ids_query(monkeypatch):
@@ -1994,13 +2020,10 @@ def test_dependency_filter_logs_one_json_result(monkeypatch):
     assert result["availableDataCapabilityCount"] == 6
     assert result["availableEventCapabilityCount"] > 0
     assert result["availableAssetCapabilityCount"] > 0
-    assert {
-        item["id"] for item in result["removedCapabilities"]
-    } == set(result["checkedCapabilityIds"])
-    assert {
-        (item["type"], item["reason"])
-        for item in result["removedCapabilities"]
-    } == {
+    assert {item["id"] for item in result["removedCapabilities"]} == set(
+        result["checkedCapabilityIds"]
+    )
+    assert {(item["type"], item["reason"]) for item in result["removedCapabilities"]} == {
         ("data", ErrorCode.PACKAGE_NOT_INSTALLED.value),
         ("event", ErrorCode.PACKAGE_NOT_INSTALLED.value),
     }
@@ -2146,6 +2169,98 @@ def test_candidate_data_binding_rejects_legacy_update_model():
         )
 
 
+def test_task_spec_builder_uses_bounded_preview_data_without_logging_it():
+    preview = {
+        "temperature": "31°",
+        "warning": "高温预警",
+        "value": 31,
+    }
+    registry = CapabilityRegistry(version=REGISTRY_VERSION_6)
+    resolver = DeviceCapabilityResolver(registry)
+    binding = CandidateDataBinding(
+        capabilityId="ViewWeather",
+        arguments={"districtName": "深圳"},
+        writeResultTo="/data/weather",
+        candidateOutputFields=[],
+        previewData=preview,
+    )
+
+    effective, capabilities, removed = resolver.resolve_generation_data_bindings([binding])
+    task_spec = TaskSpecBuilder().build(
+        user_query="天气卡片",
+        size="2x2",
+        effective_bindings=effective,
+        effective_data_capabilities=capabilities,
+        event_candidates=[],
+        asset_candidates=[],
+    )
+
+    assert removed == []
+    assert effective[0].previewData == preview
+    assert "previewData" not in binding.model_dump(mode="json")
+    weather = task_spec.dataModelSchema["data"]["weather"]
+    assert weather["temperature"]["sampleValue"] == "31°"
+    assert weather["warning"]["sampleValue"] == "高温预警"
+    assert weather["value"]["sampleValue"] == 31
+    assert "current" not in weather
+
+
+def test_task_spec_builder_batch_projection_includes_complete_capability_schema():
+    registry = CapabilityRegistry(version=REGISTRY_VERSION_6)
+    capability = registry.get_data_capability("ViewWeather")
+    assert capability is not None
+    binding = CandidateDataBinding(
+        capabilityId="ViewWeather",
+        arguments={"districtName": "深圳"},
+        writeResultTo="/data/weather",
+        candidateOutputFields=["/current/temperatureText", "/current/condition"],
+    )
+
+    regular = TaskSpecBuilder().build(
+        user_query="深圳天气",
+        size="2x2",
+        effective_bindings=[binding],
+        effective_data_capabilities=[capability],
+        event_candidates=[],
+        asset_candidates=[],
+    )
+    batch = TaskSpecBuilder().build(
+        user_query="深圳天气",
+        size="2x2",
+        effective_bindings=[binding],
+        effective_data_capabilities=[capability],
+        event_candidates=[],
+        asset_candidates=[],
+        include_all_output_fields=True,
+    )
+
+    assert "airQuality" not in regular.dataModelSchema["data"]["weather"]["current"]
+    assert batch.dataModelSchema["data"]["weather"]["current"]["airQuality"]["sampleValue"] == "良"
+    assert (
+        batch.dataModelSchema["data"]["weather"]["location"]["districtName"]["sampleValue"]
+        == "深圳"
+    )
+
+
+@pytest.mark.parametrize(
+    "preview",
+    [
+        {"__proto__": "forbidden"},
+        {"items": list(range(33))},
+        {"text": "x" * 513},
+        {"value": float("nan")},
+    ],
+)
+def test_candidate_data_binding_rejects_unsafe_preview_data(preview):
+    with pytest.raises(ValidationError):
+        CandidateDataBinding(
+            capabilityId="ViewWeather",
+            arguments={},
+            writeResultTo="/data/weather",
+            previewData=preview,
+        )
+
+
 def test_generation_options_rejects_inline_artifact_response():
     with pytest.raises(ValidationError):
         GenerationOptions(returnArtifactInline=True)
@@ -2193,6 +2308,7 @@ def test_task_spec_builder_projects_valid_object_and_array_fields():
                 id="asset.drop_1",
                 src="resources/base/media/drop_1.svg",
                 description="雨滴",
+                sceneTags=["weather", "humidity"],
             )
         ],
     )
@@ -2221,8 +2337,54 @@ def test_task_spec_builder_projects_valid_object_and_array_fields():
         "eventCandidates",
         "dataModelSchema",
         "assetCandidates",
+        "selectedTemplateId",
     }
+    assert task_spec.selectedTemplateId is None
     assert task_spec.assetCandidates[0]["id"] == "asset.drop_1"
+    assert task_spec.assetCandidates[0]["sceneTags"] == ["weather", "humidity"]
+
+
+def test_task_spec_builder_uses_requested_weather_district_instead_of_schema_sample():
+    capability = DataCapability(
+        id="ViewWeather",
+        description="天气",
+        defaultWriteResultTo="/data/weather",
+        inputSchema={},
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "location": {
+                    "type": "object",
+                    "properties": {
+                        "districtName": {
+                            "type": "string",
+                            "description": "天气查询区县",
+                            "sampleValue": "青浦区",
+                        }
+                    },
+                }
+            },
+        },
+        dependencies=Dependencies(),
+    )
+    binding = CandidateDataBinding(
+        capabilityId="ViewWeather",
+        arguments={"districtName": "上海"},
+        writeResultTo="/data/weather",
+        candidateOutputFields=["/location/districtName"],
+    )
+
+    task_spec = TaskSpecBuilder().build(
+        user_query="上海天气",
+        size="2x2",
+        effective_bindings=[binding],
+        effective_data_capabilities=[capability],
+        event_candidates=[],
+        asset_candidates=[],
+    )
+
+    district = task_spec.dataModelSchema["data"]["weather"]["location"]["districtName"]
+    assert district["sampleValue"] == "上海"
 
 
 @pytest.mark.parametrize(
@@ -2241,9 +2403,7 @@ def test_generation_binding_rejects_invalid_write_result_json_pointer(
         candidateOutputFields=["/current/condition"],
     )
 
-    effective, capabilities, removed = resolver.resolve_generation_data_bindings(
-        [binding]
-    )
+    effective, capabilities, removed = resolver.resolve_generation_data_bindings([binding])
 
     assert effective == []
     assert capabilities == []
@@ -2417,7 +2577,7 @@ def test_prompt_builder_returns_model_messages():
         {
             "id": "a2ui-form-rom6.0-v1",
             "version": "v0.9",
-            "catalogId": "ohos.a2ui.extended.catalog.form",
+            "catalogId": "ohos.a2ui.extended.catalog",
             "sizes": {"2x4": {"width": 300, "height": 140}},
             "componentWhitelist": ["Text", "Column"],
         },
@@ -2550,7 +2710,7 @@ async def test_a2ui_model_client_returns_mock_dat_without_processing():
         {
             "version": "v0.9",
             "format": "a2ui-form",
-            "catalogId": "ohos.a2ui.extended.catalog.form",
+            "catalogId": "ohos.a2ui.extended.catalog",
             "sizes": {"2x4": {"width": 300, "height": 140}},
         },
     )
@@ -2597,6 +2757,10 @@ async def test_a2ui_model_client_selects_design_compact_mock_by_task_size(
     assert len(converted_rows) == 3
     assert "width" not in converted_rows[0]["createSurface"]
     assert "height" not in converted_rows[0]["createSurface"]
+    components = converted_rows[1]["updateComponents"]["components"]
+    converted_root = next(item for item in components if item["id"] == "root")
+    assert converted_root["styles"]["width"] == "matchParent"
+    assert converted_root["styles"]["height"] == "matchParent"
 
 
 @pytest.mark.asyncio
@@ -2617,6 +2781,50 @@ async def test_a2ui_model_client_real_mode_forwards_messages(monkeypatch):
     monkeypatch.setattr(client, "convert_dsl", lambda value: value)
 
     assert await client.generate(messages) == "forwarded"
+    assert client.model_step_records == [
+        {
+            "sequence": 1,
+            "phase": "initial",
+            "status": "success",
+            "durationMs": client.model_step_records[0]["durationMs"],
+            "rawOutput": "forwarded",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a2ui_model_client_records_structured_step_raw_output():
+    class FakeTransport:
+        @staticmethod
+        def generate(_messages):
+            return '{"scopeVersion":"advanced-scope-brief/1"}'
+
+    client = A2UIModelClient(use_mock=False, transport=FakeTransport())
+
+    parsed = await client.generate_json([], phase="advanced-component-scope")
+
+    assert parsed["scopeVersion"] == "advanced-scope-brief/1"
+    assert client.model_step_records[0]["phase"] == "advanced-component-scope"
+    assert client.model_step_records[0]["rawOutput"] == (
+        '{"scopeVersion":"advanced-scope-brief/1"}'
+    )
+
+
+@pytest.mark.asyncio
+async def test_a2ui_model_client_records_step_inputs_only_for_batch_mode(monkeypatch):
+    messages = [{"role": "user", "content": "batch prompt"}]
+
+    class FakeTransport:
+        @staticmethod
+        def generate(_messages):
+            return "ok"
+
+    monkeypatch.setattr(get_settings(), "enable_widget_batch_recording", True)
+    client = A2UIModelClient(use_mock=False, transport=FakeTransport())
+
+    await client.generate(messages, phase="advanced-mixed-body")
+
+    assert client.model_step_records[0]["inputMessages"] == messages
 
 
 @pytest.mark.asyncio
@@ -2695,6 +2903,10 @@ async def test_model_runtime_collects_llmclient_stream(monkeypatch):
 
     messages = [{"role": "user", "content": "weather"}]
     monkeypatch.setattr("custom.model_runtime.stream_genui", fake_stream)
+    monkeypatch.setattr(
+        "custom.model_runtime.LLMClientOptions",
+        lambda: LLMClientOptions(api_key="AccessService"),
+    )
 
     result = await asyncio.to_thread(_generate_with_llmclient, messages)
 
@@ -2712,10 +2924,8 @@ def test_a2ui_model_client_converts_design_dsl_to_standard_dsl(monkeypatch):
     design_dsl = "\n".join(
         (
             "```genui",
-            '["root","Column",{"width":160,"height":160,"padding":8,'
-            '"itemMargin":8},["title"]]',
-            '["title","Text",{"content":{"path":"/data/message"},'
-            '"design":"title-s"}]',
+            '["root","Column",{"width":160,"height":160,"padding":8,"itemMargin":8},["title"]]',
+            '["title","Text",{"content":{"path":"/data/message"},"design":"title-s"}]',
             '["/data/message","欢迎回来"]',
             "```",
         )
@@ -2733,13 +2943,11 @@ def test_a2ui_model_client_converts_design_dsl_to_standard_dsl(monkeypatch):
     assert messages[1]["updateComponents"]["root"] == "root"
     assert messages[2]["updateDataModel"]["value"]["data"]["message"] == "欢迎回来"
     conversion_logs = [
-        message
-        for message in info_logs
-        if "design_dsl_conversion_completed" in message
+        message for message in info_logs if "design_dsl_conversion_completed" in message
     ]
     assert len(conversion_logs) == 1
-    assert "converted_dsl=" in conversion_logs[0]
-    assert '\\"createSurface\\"' in conversion_logs[0]
+    assert "converted_length=" in conversion_logs[0]
+    assert "createSurface" not in conversion_logs[0]
 
 
 def test_design_converter_expands_latest_design_tokens():
@@ -2749,15 +2957,11 @@ def test_design_converter_expands_latest_design_tokens():
             '"itemMargin":4},["hero","title","button","progress","small_progress","check"]]',
             '["hero","Image",{"src":"resources/base/media/sun_max.svg",'
             '"design":"icon-lg","fillColor":"icon_fourth"}]',
-            '["title","Text",{"content":"电量","design":"display-s",'
-            '"fontColor":"font_primary"}]',
-            '["progress","Progress",{"value":68,"total":100,'
-            '"design":"ring"}]',
-            '["small_progress","Progress",{"value":32,"total":100,'
-            '"design":"linear-bar-small"}]',
+            '["title","Text",{"content":"电量","design":"display-s","fontColor":"font_primary"}]',
+            '["progress","Progress",{"value":68,"total":100,"design":"ring"}]',
+            '["small_progress","Progress",{"value":32,"total":100,"design":"linear-bar-small"}]',
             '["button","Button",{"label":"info","design":"icon-round"}]',
-            '["check","Checkbox",{"label":"省电","select":true,'
-            '"design":"check"}]',
+            '["check","Checkbox",{"label":"省电","select":true,"design":"check"}]',
         )
     )
 
@@ -2768,8 +2972,7 @@ def test_design_converter_expands_latest_design_tokens():
     )
     components = json_module.loads(result.splitlines()[1])
     component_by_id = {
-        component["id"]: component
-        for component in components["updateComponents"]["components"]
+        component["id"]: component for component in components["updateComponents"]["components"]
     }
 
     assert component_by_id["hero"]["styles"]["width"] == "matchParent"
@@ -2796,7 +2999,7 @@ def test_design_converter_reads_protocol_file_from_selected_design_profile(monke
         selected_profiles.append(profile_id)
         return {
             "version": "v1.1",
-            "catalogId": "ohos.a2ui.extended.catalog.form",
+            "catalogId": "ohos.a2ui.extended.catalog",
             "sizes": {"2x4": {"width": 288, "height": 136}},
         }
 
@@ -2814,6 +3017,7 @@ def test_design_converter_reads_protocol_file_from_selected_design_profile(monke
     create_surface = json_module.loads(result.splitlines()[0])["createSurface"]
 
     assert selected_profiles == ["design-next"]
+    # Surface 不声明画布尺寸，避免被旧 Design profile 的内容区尺寸污染。
     assert "width" not in create_surface
     assert "height" not in create_surface
 
@@ -2840,10 +3044,7 @@ def test_a2ui_model_client_design_test_task_spec_covers_weather_capabilities():
         "asset.drop_1",
         "asset.thermometer_sun_fill",
     ]
-    assert all(
-        candidate["src"].endswith(".svg")
-        for candidate in task_spec["assetCandidates"]
-    )
+    assert all(candidate["src"].endswith(".svg") for candidate in task_spec["assetCandidates"])
 
 
 def test_a2ui_model_client_builds_qwen_chatml_prompt():
@@ -2874,8 +3075,7 @@ async def test_a2ui_model_client_reads_predict_stream(monkeypatch):
         }
     )
     stream = (
-        f"$@START_PREFIX@#{partial}$@END_SUFFIX@#"
-        f"$@START_PREFIX@#{final}$@END_SUFFIX@#"
+        f"$@START_PREFIX@#{partial}$@END_SUFFIX@#$@START_PREFIX@#{final}$@END_SUFFIX@#"
     ).encode()
     captured: dict = {}
 
@@ -2928,8 +3128,7 @@ def test_mep_event_decoder_accepts_single_byte_chunk_boundaries():
         ensure_ascii=False,
     )
     stream = (
-        f"noise$@START_PREFIX@#{partial}$@END_SUFFIX@#"
-        f"$@START_PREFIX@#{final}$@END_SUFFIX@#"
+        f"noise$@START_PREFIX@#{partial}$@END_SUFFIX@#$@START_PREFIX@#{final}$@END_SUFFIX@#"
     ).encode()
     decoder = PredictEventDecoder()
     events = []
@@ -3145,6 +3344,35 @@ async def test_llmclient_timeout_keeps_shared_permit_until_physical_completion()
 
 
 @pytest.mark.asyncio
+async def test_http_llmclient_timeout_closes_native_async_stream(monkeypatch):
+    settings = Settings(
+        _env_file=None,
+        deepseek_api_key="test-key",
+        deepseek_api_url="https://api.deepseek.test",
+        model_request_timeout_seconds=0.01,
+    )
+    stream_closed = asyncio.Event()
+
+    async def slow_stream(_options, _messages, *, trace=None):
+        del trace
+        try:
+            await asyncio.sleep(1.0)
+            yield "late-result"
+        finally:
+            stream_closed.set()
+
+    monkeypatch.setattr("custom.model_runtime.stream_genui", slow_stream)
+    runtime = ModelExecutionRuntime(settings)
+    try:
+        with pytest.raises(ModelTransportError) as request_error:
+            await runtime.generate("llmclient", [])
+        assert request_error.value.code == "MODEL_REQUEST_TIMEOUT"
+        assert stream_closed.is_set() is True
+    finally:
+        await runtime.aclose()
+
+
+@pytest.mark.asyncio
 async def test_model_runtime_cancels_mep_when_execution_timeout_expires():
     settings = Settings(
         model_max_concurrency=1,
@@ -3287,8 +3515,7 @@ async def test_design_compact_model_client_returns_streamed_ndjson(monkeypatch):
         }
     )
     stream = (
-        f"$@START_PREFIX@#{partial}$@END_SUFFIX@#"
-        f"$@START_PREFIX@#{final}$@END_SUFFIX@#"
+        f"$@START_PREFIX@#{partial}$@END_SUFFIX@#$@START_PREFIX@#{final}$@END_SUFFIX@#"
     ).encode()
 
     class FakeResponse:
@@ -3337,9 +3564,7 @@ async def test_design_compact_model_client_returns_streamed_ndjson(monkeypatch):
 
 
 def test_compact_model_client_has_no_artificial_completion_limit():
-    source = (CLOUD_ROOT / "custom" / "mep_model_transport.py").read_text(
-        encoding="utf-8"
-    )
+    source = (CLOUD_ROOT / "custom" / "mep_model_transport.py").read_text(encoding="utf-8")
 
     assert "COMPACT_DSL_MAX_TOKENS" not in source
     assert "max_duration" not in source
@@ -3399,6 +3624,69 @@ def _model_failure_request() -> GenerateWidgetCardRequest:
         title="静态卡片",
         description="模型失败处理测试",
     )
+
+
+def _compact_weather_request() -> GenerateWidgetCardRequest:
+    return GenerateWidgetCardRequest(
+        uid="test-user",
+        prdVer=APP_VERSION,
+        device={"romVersion": ROM_VERSION_6},
+        userQuery="生成展示当前天气状况的卡片",
+        size="2x4",
+        title="天气",
+        description="当前天气状况",
+        candidateDataBindings=[
+            {
+                "capabilityId": "ViewWeather",
+                "arguments": {"districtName": "上海"},
+                "writeResultTo": "/data/weather",
+                "candidateOutputFields": ["/current/condition"],
+            }
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_compact_template_rejection_falls_back_to_original_dev_flow(monkeypatch):
+    settings = get_settings()
+    design_dsl = (CLOUD_ROOT / "custom" / "mock.design-compact-dsl-2x4.dat").read_text(
+        encoding="utf-8"
+    )
+    template_calls = 0
+    original_calls = 0
+    archived_tokens: list[str | None] = []
+
+    async def reject_template(*_args, **_kwargs):
+        nonlocal template_calls
+        template_calls += 1
+        raise TemplateRouteNotApplicable("query data is not fully covered")
+
+    def generate_original(_client, _prompt, _profile=None, **_kwargs):
+        nonlocal original_calls
+        original_calls += 1
+        return design_dsl
+
+    def save_original(store, _artifact):
+        archived_tokens.append(store.design_token)
+        return ArtifactSaveResult(
+            artifactUrl="https://artifact.test/compact-fallback",
+            artifactDigest="sha256:compact-fallback",
+        )
+
+    monkeypatch.setattr(settings, "enable_artifact_validation", False)
+    monkeypatch.setattr(AdvancedComponentPipeline, "generate_mixed", reject_template)
+    monkeypatch.setattr(A2UIModelClient, "generate", generate_original)
+    monkeypatch.setattr(ArtifactStore, "save", save_original)
+
+    response = await WidgetGenerationService().generate_widget_card_compact_dsl(
+        _compact_weather_request()
+    )
+
+    assert response.status == GenerationStatus.SUCCESS
+    assert response.generationFallbackUsed is True
+    assert template_calls == 1
+    assert original_calls == 1
+    assert archived_tokens == [design_dsl.strip()]
 
 
 @pytest.mark.parametrize(
@@ -3653,15 +3941,8 @@ async def test_design_compact_validation_error_without_repair_fails(monkeypatch)
 _SOURCE_FORMAT_CASES = [
     (
         "generate_widget_card_compact_dsl",
-        (CLOUD_ROOT / "custom" / "mock.design-compact-dsl-2x4.dat").read_text(
-            encoding="utf-8"
-        ),
+        (CLOUD_ROOT / "custom" / "mock.design-compact-dsl-2x4.dat").read_text(encoding="utf-8"),
         "design-compact-dsl",
-    ),
-    (
-        "generate_widget_card_terse_dsl_nested2",
-        'Column("card", Text("静态天气", "title"), Text("晴 26℃", "success"));',
-        "terse-dsl-nested-2",
     ),
 ]
 
@@ -3811,10 +4092,7 @@ async def test_quality_repair_can_transition_from_conversion_to_validation(
 
     service = WidgetGenerationService()
     response = await getattr(service, generation_method)(_model_failure_request())
-    repair_payloads = [
-        json_module.loads(model_prompts[index][1]["content"])
-        for index in (1, 2)
-    ]
+    repair_payloads = [json_module.loads(model_prompts[index][1]["content"]) for index in (1, 2)]
 
     assert response.status == GenerationStatus.SUCCESS
     assert len(model_prompts) == 3
@@ -3862,10 +4140,7 @@ async def test_source_format_validation_repair_stops_at_configured_maximum(
 
     service = WidgetGenerationService()
     response = await getattr(service, generation_method)(_model_failure_request())
-    repair_payloads = [
-        json_module.loads(model_prompts[index][1]["content"])
-        for index in (1, 2)
-    ]
+    repair_payloads = [json_module.loads(model_prompts[index][1]["content"]) for index in (1, 2)]
 
     assert response.status == GenerationStatus.FAILED
     assert response.errorCode == ErrorCode.VALIDATION_FAILED.value
@@ -3873,10 +4148,7 @@ async def test_source_format_validation_repair_stops_at_configured_maximum(
     assert len(model_prompts) == 3
     assert validation_calls == 3
     assert all(payload["dslFormat"] == source_format for payload in repair_payloads)
-    assert all(
-        payload["qualityErrors"][0]["stage"] == "validation"
-        for payload in repair_payloads
-    )
+    assert all(payload["qualityErrors"][0]["stage"] == "validation" for payload in repair_payloads)
 
 
 @pytest.mark.asyncio
@@ -3899,9 +4171,7 @@ async def test_unknown_processor_exception_does_not_trigger_model_repair(monkeyp
     monkeypatch.setattr(processor, "process", raise_internal_error)
 
     with pytest.raises(RuntimeError, match="converter implementation failed"):
-        await WidgetGenerationService().generate_widget_card_compact_dsl(
-            _model_failure_request()
-        )
+        await WidgetGenerationService().generate_widget_card_compact_dsl(_model_failure_request())
 
     assert model_calls == 1
 
@@ -3927,9 +4197,7 @@ async def test_unknown_validator_exception_does_not_trigger_model_repair(monkeyp
     monkeypatch.setattr(ArtifactValidator, "validate", raise_internal_error)
 
     with pytest.raises(RuntimeError, match="validator implementation failed"):
-        await WidgetGenerationService().generate_widget_card_compact_dsl(
-            _model_failure_request()
-        )
+        await WidgetGenerationService().generate_widget_card_compact_dsl(_model_failure_request())
 
     assert model_calls == 1
 
@@ -3938,7 +4206,6 @@ async def test_unknown_validator_exception_does_not_trigger_model_repair(monkeyp
     ("generation_method", "processor_kind"),
     [
         ("generate_widget_card_compact_dsl", DslProcessorKind.DESIGN_COMPACT),
-        ("generate_widget_card_terse_dsl_nested2", DslProcessorKind.TERSE_NESTED2),
     ],
 )
 @pytest.mark.asyncio
@@ -3993,7 +4260,6 @@ async def test_source_format_warning_does_not_trigger_repair(
     "generation_method",
     [
         "generate_widget_card_compact_dsl",
-        "generate_widget_card_terse_dsl_nested2",
     ],
 )
 @pytest.mark.asyncio
@@ -4030,7 +4296,6 @@ async def test_conversion_failure_does_not_repair_when_switch_is_disabled(
     "generation_method",
     [
         "generate_widget_card_compact_dsl",
-        "generate_widget_card_terse_dsl_nested2",
     ],
 )
 @pytest.mark.asyncio
@@ -4204,9 +4469,7 @@ async def test_artifact_store_returns_structured_save_result(tmp_path, monkeypat
             createdAt=1,
         ),
     )
-    design_compact_dsl = (
-        '["root","Column",{"width":"matchParent","height":140},[]]'
-    )
+    design_compact_dsl = '["root","Column",{"width":"matchParent","height":140},[]]'
     result = await ArtifactStore(design_token=design_compact_dsl).save(artifact)
 
     assert result.artifactUrl.endswith(".md")
@@ -4228,13 +4491,9 @@ async def test_artifact_store_returns_structured_save_result(tmp_path, monkeypat
     assert uploaded_content.count("```meta") == 1
     assert uploaded_content.count("```schema") == 1
     assert uploaded_content.count("```designcompactdsl") == 1
-    assert uploaded_content.index("```meta") < uploaded_content.index(
-        "```designcompactdsl"
-    )
+    assert uploaded_content.index("```meta") < uploaded_content.index("```designcompactdsl")
     assert uploaded_content.endswith(
-        "```designcompactdsl\n"
-        '["root","Column",{"width":"matchParent","height":140},[]]\n'
-        "```\n"
+        '```designcompactdsl\n["root","Column",{"width":"matchParent","height":140},[]]\n```\n'
     )
     assert '"title": "天气速览"' in uploaded_content
     assert '"description": "查看当前天气"' in uploaded_content
@@ -4334,7 +4593,7 @@ def test_artifact_validator_rejects_legacy_component_shape():
         [
             (
                 '{"version":"v0.9","createSurface":'
-                '{"surfaceId":"card","catalogId":"ohos.a2ui.extended.catalog.form",'
+                '{"surfaceId":"card","catalogId":"ohos.a2ui.extended.catalog",'
                 '"width":300,"height":140}}'
             ),
             (
@@ -4365,9 +4624,7 @@ def test_artifact_validator_rejects_legacy_component_shape():
 
 def test_card_validation_is_exposed_as_in_process_api():
     reporter = validate_card_api(dsl_text="not-json")
-    validator_source = (CLOUD_ROOT / "services" / "validator.py").read_text(
-        encoding="utf-8"
-    )
+    validator_source = (CLOUD_ROOT / "services" / "validator.py").read_text(encoding="utf-8")
 
     assert reporter.has_code("DSL_JSON_PARSE_FAILED")
     assert "services.card_validation" in validator_source
@@ -4395,34 +4652,24 @@ def test_card_validation_loads_latest_online_rule_snapshot():
 
 def test_card_validation_snapshot_covers_all_online_runtime_files():
     repository_root = PROJECT_ROOT.parent
-    skill_scripts = (
-        repository_root / "skills" / "harmony-card-generation-online" / "scripts"
-    )
+    skill_scripts = repository_root / "skills" / "harmony-card-generation-online" / "scripts"
     skill_validators = skill_scripts / "validators"
     service_validators = CLOUD_ROOT / "services" / "card_validation"
     skill_rules = skill_scripts / "rules"
     service_rules = CLOUD_ROOT / "data" / "validator_rules"
 
-    skill_validator_names = {
-        path.name for path in skill_validators.glob("*.py") if path.is_file()
-    }
+    skill_validator_names = {path.name for path in skill_validators.glob("*.py") if path.is_file()}
     service_validator_names = {
         path.name for path in service_validators.glob("*.py") if path.is_file()
     }
     assert service_validator_names == skill_validator_names
 
-    skill_rule_paths = {
-        path.relative_to(skill_rules) for path in skill_rules.rglob("*.json")
-    }
-    service_rule_paths = {
-        path.relative_to(service_rules) for path in service_rules.rglob("*.json")
-    }
+    skill_rule_paths = {path.relative_to(skill_rules) for path in skill_rules.rglob("*.json")}
+    service_rule_paths = {path.relative_to(service_rules) for path in service_rules.rglob("*.json")}
     assert service_rule_paths == skill_rule_paths
 
     for relative_path in skill_rule_paths:
-        skill_rule = json_module.loads(
-            (skill_rules / relative_path).read_text(encoding="utf-8")
-        )
+        skill_rule = json_module.loads((skill_rules / relative_path).read_text(encoding="utf-8"))
         service_rule = json_module.loads(
             (service_rules / relative_path).read_text(encoding="utf-8")
         )
@@ -4440,7 +4687,7 @@ def _a2ui_genui_with_image(
                     "version": "v0.9",
                     "createSurface": {
                         "surfaceId": "card",
-                        "catalogId": "ohos.a2ui.extended.catalog.form",
+                        "catalogId": "ohos.a2ui.extended.catalog",
                     },
                 },
                 separators=(",", ":"),
@@ -4497,9 +4744,7 @@ def _a2ui_genui_with_image(
 
 def test_card_validator_uses_effective_asset_candidates_without_external_reads():
     source = "resources/base/media/air_fill.svg"
-    validator_source = (
-        CLOUD_ROOT / "services" / "card_validator.py"
-    ).read_text(encoding="utf-8")
+    validator_source = (CLOUD_ROOT / "services" / "card_validator.py").read_text(encoding="utf-8")
 
     selected_report = validate_card(
         _a2ui_genui_with_image(source),

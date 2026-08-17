@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
+import json
+import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 WidgetSize = Literal["2x2", "2x4"]
 DEFAULT_WIDGET_SIZE: WidgetSize = "2x2"
@@ -41,6 +43,52 @@ class CandidateDataBinding(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     writeResultTo: str
     candidateOutputFields: list[str] = Field(default_factory=list)
+    # 受控调用可提供用于设计生成的即时数据预览。该字段只参与 TaskSpec Prompt，
+    # 不进入 CardSpec、工具响应或生产请求日志。
+    previewData: dict[str, Any] | None = Field(default=None, exclude=True)
+
+    @field_validator("previewData")
+    @classmethod
+    def validate_preview_data(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        node_count = 0
+
+        def walk(item: Any, depth: int) -> None:
+            nonlocal node_count
+            node_count += 1
+            if node_count > 128:
+                raise ValueError("previewData exceeds the node limit")
+            if depth > 8:
+                raise ValueError("previewData exceeds the depth limit")
+            if isinstance(item, dict):
+                for key, child in item.items():
+                    if not isinstance(key, str) or not key or len(key) > 128:
+                        raise ValueError("previewData keys must be non-empty short strings")
+                    if key in {"__proto__", "constructor", "prototype"}:
+                        raise ValueError("previewData contains a forbidden key")
+                    walk(child, depth + 1)
+                return
+            if isinstance(item, list):
+                if len(item) > 32:
+                    raise ValueError("previewData arrays exceed the item limit")
+                for child in item:
+                    walk(child, depth + 1)
+                return
+            if isinstance(item, str):
+                if len(item) > 512:
+                    raise ValueError("previewData strings exceed the size limit")
+                return
+            if isinstance(item, bool) or item is None or isinstance(item, int):
+                return
+            if isinstance(item, float) and math.isfinite(item):
+                return
+            raise ValueError("previewData accepts JSON literals only")
+
+        walk(value, 0)
+        if len(json.dumps(value, ensure_ascii=False, separators=(",", ":"))) > 16_384:
+            raise ValueError("previewData exceeds the encoded size limit")
+        return value
 
 
 class CardSpecDataBinding(BaseModel):
@@ -55,6 +103,7 @@ class CardSpecDataBinding(BaseModel):
 
 class EventAction(BaseModel):
     id: str | None = None
+    displayLabel: str | None = None
     call: str
     args: dict[str, Any]
 
@@ -63,6 +112,8 @@ class GenerationOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     allowDegradation: bool = True
+    forceHybridTemplate: bool = False
+    testAuthorization: str | None = Field(default=None, exclude=True)
 
 
 class CardSpec(BaseModel):
@@ -80,3 +131,4 @@ class TaskSpec(BaseModel):
     eventCandidates: list[EventAction] = Field(default_factory=list)
     dataModelSchema: dict[str, Any]
     assetCandidates: list[dict[str, Any]] = Field(default_factory=list)
+    selectedTemplateId: str | None = None

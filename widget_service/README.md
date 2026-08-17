@@ -18,10 +18,16 @@ The service follows `docs/AGENTS.md`:
   profile's `protocol.json` before validation and storage. The three generation routes share one policy-driven
   generation pipeline and the same model-failure, quality-repair, and validation switches. Tool callers cannot
   select or override either backend.
-- `generateWidgetCardTerseDslNested2` uses the local `tersedsl-nested-2/0.1` Prompt and a restricted
-  literal-only parser. It never executes model output and deterministically converts the nested component tree to
-  standard A2UI. It supports static create/edit requests and shares the edit switch with the other generation
-  routes; dynamic data bindings and events remain unsupported.
+- `generateWidgetCardTerseDslNested2` keeps two model calls but bypasses the legacy whole-card flow from the first
+  request. The new `advanced-component-scope` phase returns only a versioned Theme and business-component scope; the
+  `advanced-mixed-body` phase emits one trusted UX layout component as the root and mixes versioned local Templates,
+  standard components, and one layout-owned Action. The service lowers the layout, Action, and Templates before A2UI,
+  so none can reach the client. Legacy `card@1`, UI Brief, confidence scoring, argument mapping, and whole-card
+  compilation remain in code for compatibility tests and artifact-level rollback but are not called by the fifth
+  create route.
+- The legacy hybrid bypass parameter is test-only and disabled by default. It still requires the enable switch, a
+  local/test environment, and constant-time verification of a separate token, but it no longer changes the already
+  fixed mixed route. Every real DeepSeek physical attempt reserves one slot in the persistent concurrency-safe budget.
 - Temporary route `generateWidgetCardCompactDslWithDirective` directly reuses the fourth route's generation service
   and schema, but always emits widget directive command frames even when the global directive switch is disabled.
   Its forced behavior is isolated in the router so the route can be removed without changing the generation pipeline.
@@ -31,6 +37,10 @@ The service follows `docs/AGENTS.md`:
   repair to 1-10 attempts, and processing stops early when all errors disappear. Warnings never trigger repair.
   Conversion remains mandatory when Validator is disabled. Unconverted Design/Terse output is never saved;
   remaining Validator errors are non-blocking only for the standard third interface.
+- `WIDGET_SERVICE_ENABLE_ADVANCED_WHOLE_CARD_TEMPLATE` and the confidence threshold remain available to legacy
+  `AdvancedComponentPipeline.generate()` compatibility tests only. They do not select the fifth create route;
+  restoring the legacy whole-card main path requires an explicit service artifact rollback. Strict mixed failures do
+  not fall back to the legacy entry or generic TerseDSL-Nested-2 generation.
 - `WIDGET_SERVICE_ENABLE_MODEL_FAILURE_RETRY=false` by default. Model transport errors,
   explicit model errors, and empty DSL output return `failed/A2UI_GENERATION_FAILED`;
   when disabled, the selected route calls only its master once and does not use fallback. When enabled, every initial
@@ -76,6 +86,15 @@ The service follows `docs/AGENTS.md`:
   text while retaining message and character counts.
 - `WIDGET_SERVICE_ENABLE_ARTIFACT_DOWNLOAD_MOCK=true` by default. Multi-round source artifacts are read only from `cloud/workspace/mock_obs`; missing mock files do not fall back to the network. Set it to `false` to download from the validated HTTPS artifact URL.
 - The WebSocket router logs each received request object as compact standard JSON before protocol normalization. Structured values embedded in other log messages use the same double-quoted JSON format. Sensitive `uid`/`userId`/`callingUid` and `odid` are recursively omitted; `sourceArtifactUrl` is retained in the raw request log.
+- Nested-2 batch evaluation persistence is opt-in through
+  `WIDGET_SERVICE_ENABLE_WIDGET_BATCH_RECORDING`. A client supplies `batchId`, `caseId`, and `size` together as
+  WebSocket query parameters. The service atomically stores the raw input, structured response, exact final plugin
+  frame, A2UI JSONL, and server latency before sending the final frame. Query/download endpoints reuse
+  `WIDGET_SERVICE_WEBSOCKET_BEARER_TOKEN`; ordinary calls without batch parameters retain their previous behavior.
+  Batch runs may temporarily relax first-layer data admission, Query-to-variant adaptation, and
+  Template candidate data matching through
+  `WIDGET_SERVICE_ENABLE_ADVANCED_COMPONENT_DATA_ADMISSION_BYPASS_FOR_BATCH`. Capability, Registry, trusted fact
+  projection, compiler, event, asset, and final protocol validation remain enforced.
 - The server logs process-wide WebSocket `active_connections`, cumulative `total_connections`, and `running_tasks` every 10 seconds.
 - Starlette synchronous handlers use the AnyIO worker pool with 80 concurrent tokens by default.
   Override it with `WIDGET_SERVICE_ANYIO_THREAD_POOL_TOKENS` when deployment capacity requires a different limit.
@@ -83,6 +102,16 @@ The service follows `docs/AGENTS.md`:
   not cancel generation, repair, or artifact persistence.
 - Package filtering emits exactly one summary result per capability-overview request; per-capability dependency-check logs are not emitted.
 - OBS upload is intentionally left as a TODO hook in `ArtifactStore`; remote source artifact reads reuse `utils/download_file_from_url.py`.
+
+See `docs/cardplan_template_production.md` for the CardPlan Registry/Compiler mapping, SHA drift checks, bypass security,
+Golden evaluation commands, deployment, observability, and rollback guidance.
+
+The fifth create route's first response is `advanced-scope-brief/1` with only `themeId` and
+`advancedComponentIds`. The second response is rooted directly at an approved UX layout. The layout owns its final
+Action slot, while the trusted service injects the approved label, event, and UX dimensions. A separate header is
+optional and omitted by default; business content owns its semantic title. Business advanced components own variants
+and local Template capability. The trusted service validates Theme/palette compatibility, layout compatibility,
+action limits, and Chinese phrase-level candidates before the second model call.
 
 ## Run
 
@@ -165,12 +194,51 @@ py -3.12 -m pytest tests\test_service_units.py -s -q
 
 ```text
 GET  /health
+WS   /ws  (Bearer-protected CardTemplate UX `card.generate` compatibility endpoint)
+GET  /api/v1/widget-batches
+GET  /api/v1/widget-batches/{batchId}
+GET  /api/v1/widget-batches/{batchId}/download
 WS   /api/v1/ws/tools/getWidgetCapabilityOverview
 WS   /api/v1/ws/tools/getDataCapabilitySchemas
 WS   /api/v1/ws/tools/generateWidgetCard
 WS   /api/v1/ws/tools/generateWidgetCardCompactDsl
 WS   /api/v1/ws/tools/generateWidgetCardTerseDslNested2
 ```
+
+When `WIDGET_SERVICE_WEBSOCKET_BEARER_TOKEN` is configured, the same static Bearer token protects
+the compatibility endpoint and all `/api/v1/ws/tools/*` endpoints. The compatibility endpoint only
+accepts `card.generate` with `pipeline=card-plan-template`; it expands the trusted Provider
+CardTemplate result to standard A2UI messages and never sends Template or conditional guard nodes
+to the client. The retained Python business constructors are test-only Shadow Oracles.
+
+批量评测部署时，需要显式开启记录并把结果目录挂到持久卷：
+
+```text
+WIDGET_SERVICE_ENABLE_WIDGET_BATCH_RECORDING=true
+WIDGET_SERVICE_ENABLE_ADVANCED_COMPONENT_DATA_ADMISSION_BYPASS_FOR_BATCH=true
+WIDGET_SERVICE_WIDGET_BATCH_RESULTS_PATH=/data/widget_batch_runs
+```
+
+批测临时开关默认为 `false`：仅在批次记录与本开关同时开启时，第一层高级组件候选会跳过确定性数据适配准入，
+Activity/Workout 的投影会忽略 Query 到可渲染变体的严格映射，Template 候选也不再因参数数据匹配不完整而提前
+剔除，以便观察模型选择与视觉效果；普通生成、可信事实投影和最终编译校验不受影响。完成批测后将开关设为
+`false` 即恢复完整准入。
+
+端侧对每条 Nested-2 用例连接
+`...?batchId=nested2-2x2-1720000000000&caseId=2x2-q1&size=2x2`。批次完成后可下载：
+
+```bash
+curl -H "Authorization: Bearer ${WIDGET_BATCH_TOKEN}" \
+  -o nested2-2x2.zip \
+  http://127.0.0.1:8855/api/v1/widget-batches/nested2-2x2-1720000000000/download
+```
+
+ZIP 内含 `manifest.json` 和每条用例的 `input.json`、`response.json`、
+`output.a2ui.jsonl`、`metrics.json`。完整约束见 `docs/云侧方案设计.md` 的
+“Nested-2 批量用例评测持久化”。
+
+The Docker image installs `requirements-runtime.txt`; `requirements.txt` additionally contains local
+test, lint, and type-check tooling and is intentionally not installed in the production image.
 
 Example request:
 

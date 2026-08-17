@@ -1,0 +1,995 @@
+{
+  "version": 2,
+  "sourceSet": "UX设计/2X2卡片案例",
+  "scenarios": [
+    {
+      "id": "current-meeting",
+      "fixtureId": "ux.current-meeting.2x2.v1",
+      "userQuery": "生成一张展示当前会议详情并支持加入会议的2×2卡片",
+      "title": "27日 星期一",
+      "description": "UI需求评审会",
+      "cardSize": "2x2",
+      "dataEntries": [
+        {
+          "capabilityId": "GetCalendarEvents",
+          "dataSlice": {
+            "events": [
+              {
+                "title": "UI需求评审会",
+                "dtStart": "14:00",
+                "dtEnd": "15:30",
+                "eventLocation": "深圳市龙岗区五和大道华为园区",
+                "startDate": "07-27",
+                "oneClickServiceLink": "hmos://calendar/join"
+              }
+            ],
+            "updatedAt": "2026-07-27 13:45"
+          }
+        }
+      ],
+      "eventDisplayLabels": {
+        "event.enter.meeting": "加入会议"
+      },
+      "assets": [
+        {
+          "id": "asset.icon_meeting",
+          "src": "resources/base/media/ux_golden_asset_meeting_brown.svg",
+          "description": "会议图标，当下日程"
+        },
+        {
+          "id": "asset.icon_time",
+          "src": "resources/base/media/ux_golden_asset_time_beige.svg",
+          "description": "时间图标，当下日程"
+        },
+        {
+          "id": "asset.icon_id",
+          "src": "resources/base/media/ux_golden_asset_icon_id.svg",
+          "description": "工牌/ID 图标，当下日程"
+        },
+        {
+          "id": "asset.icon_watermark",
+          "src": "resources/base/media/ux_golden_asset_watermark_beige.svg",
+          "description": "水印图标，当下日程",
+          "sceneTags": [
+            "watermark"
+          ]
+        }
+      ],
+      "cardTemplate": {
+        "themeProfileId": "meeting-paper-neutral",
+        "requestTemplateIds": [
+          "ux-meeting-metadata@1"
+        ],
+        "headerTextCandidates": [
+          {
+            "key": "title.today-meeting",
+            "role": "title",
+            "text": "今日会议"
+          }
+        ],
+        "requiredChrome": {
+          "titleKey": "title.today-meeting",
+          "iconAssetId": "asset.icon_meeting"
+        },
+        "contentActionIds": [
+          "event.enter.meeting"
+        ],
+        "contentAssetIds": [
+          "asset.icon_watermark"
+        ]
+      },
+      "providerContractStatus": "compatible",
+      "providerContractGaps": [],
+      "rawHybridSource": "HeroActionLayout(Template(\"ux-meeting-metadata@1\", \"medium\", { title: \"UI需求评审会\", time: \"14:00 - 15:30\", timeIcon: \"resources/base/media/ux_golden_asset_time_beige.svg\", location: \"深圳市龙岗区五和大道华为园区\", locationIcon: \"resources/base/media/ux_golden_asset_icon_id.svg\" }), PillAction({ actionId: \"event.enter.meeting\" }));",
+      "goldenFile": "current-meeting.a2ui.jsonl",
+      "goldenSha256": "db59aa1d6999ef64e8f758df51a8f515d54cf5034544cbf9bb4e5e554b4b7ea1",
+      "goldenSummary": {
+        "visibleTexts": [
+          "今日会议",
+          "项目阶段性汇报",
+          "10:30-11:30 AM",
+          "97396526",
+          "加入会议",
+          "28"
+        ],
+        "actionIds": [
+          "event.enter.meeting"
+        ],
+        "componentTypes": {
+          "Column": 3,
+          "Row": 4,
+          "Image": 4,
+          "Text": 5,
+          "Button": 1,
+          "Stack": 2
+        },
+        "componentCount": 19,
+        "rootComponent": "Column",
+        "rootStyles": {
+          "width": "matchParent",
+          "height": 140,
+          "padding": 7,
+          "borderRadius": 18,
+          "clip": true,
+          "justifyContent": "spaceBetween",
+          "alignItems": "center",
+          "backgroundColor": "#FBFCFA"
+        }
+      }
+    },
+    {
+      "id": "focus-mode",
+      "fixtureId": "ux.calendar.2x2.v1",
+      "userQuery": "生成一张展示下一日程并支持进入专注模式的2×2卡片",
+      "title": "下一个日程",
+      "description": "UI需求评审会",
+      "cardSize": "2x2",
+      "dataEntries": [
+        {
+          "capabilityId": "GetCalendarEvents",
+          "dataSlice": {
+            "events": [
+              {
+                "title": "UI需求评审会",
+                "dtStart": "14:00",
+                "dtEnd": "15:30",
+                "startDate": "08-11"
+              }
+            ],
+            "updatedAt": "2026-08-11 13:45"
+          }
+        }
+      ],
+      "eventDisplayLabels": {
+        "event.open.settings.dnd": "专注模式"
+      },
+      "assets": [
+        {
+          "id": "asset.icon_schedule",
+          "src": "resources/base/media/icon_schedule.svg",
+          "description": "日程图标，当下日程"
+        },
+        {
+          "id": "asset.icon_alarm_clock",
+          "src": "resources/base/media/ux_golden_asset_time_yellow.svg",
+          "description": "闹钟图标，当下日程"
+        }
+      ],
+      "cardTemplate": {
+        "themeProfileId": "focus-warm-amber",
+        "requestTemplateIds": [
+          "ux-calendar-content@1"
+        ],
+        "headerTextCandidates": [
+          {
+            "key": "title.next-event",
+            "role": "title",
+            "text": "下一个日程"
+          }
+        ],
+        "requiredChrome": {
+          "titleKey": "title.next-event",
+          "iconAssetId": "asset.icon_schedule",
+          "actionId": "event.open.settings.dnd"
+        }
+      },
+      "providerContractStatus": "compatible",
+      "providerContractGaps": [],
+      "rawHybridSource": "HeroActionLayout(Template(\"ux-calendar-content@1\", \"medium\", { title: \"UI需求评审会\", time: \"14:00 - 15:30\" }), PillAction({ actionId: \"event.open.settings.dnd\" }));",
+      "goldenFile": "focus-mode.a2ui.jsonl",
+      "goldenSha256": "762c378c1a20003af960065616fff6dc1a3ef6755b10ba466ebc69b807a70f51",
+      "goldenSummary": {
+        "visibleTexts": [
+          "下一个日程",
+          "Agent需求评审会",
+          "14:00-15:30",
+          "还有15分钟开启",
+          "专注模式"
+        ],
+        "actionIds": [],
+        "componentTypes": {
+          "Column": 1,
+          "Row": 3,
+          "Image": 3,
+          "Text": 5,
+          "Stack": 1
+        },
+        "componentCount": 13,
+        "rootComponent": "Column",
+        "rootStyles": {
+          "width": "matchParent",
+          "height": 140,
+          "padding": 10,
+          "borderRadius": 18,
+          "clip": true,
+          "justifyContent": "spaceBetween",
+          "alignItems": "center",
+          "linearGradient": {
+            "direction": "RightBottom",
+            "colors": [
+              [
+                "#9D491D",
+                0
+              ],
+              [
+                "#AC6A55",
+                0.55
+              ],
+              [
+                "#C08C85",
+                1
+              ]
+            ]
+          },
+          "shadow": {
+            "radius": 16,
+            "color": "#33251610",
+            "offsetX": 0,
+            "offsetY": 6,
+            "fill": false,
+            "type": "color",
+            "style": "outer"
+          }
+        }
+      }
+    },
+    {
+      "id": "low-power",
+      "fixtureId": "ux.low-power.2x2.v1",
+      "userQuery": "生成一张展示低电状态并支持开启省电模式的2×2卡片",
+      "title": "设备电量",
+      "description": "电量低于20%，开启省电模式",
+      "cardSize": "2x2",
+      "dataEntries": [
+        {
+          "capabilityId": "GetPhoneBatteryInfo",
+          "dataSlice": {
+            "batterySOC": 18,
+            "batterySOCText": "18%",
+            "batteryCapacityLevelDesc": "手机电量低于20%，建议开启省电模式",
+            "chargingStatusDesc": "未充电",
+            "updatedAt": "2026-08-11 10:00"
+          }
+        }
+      ],
+      "eventDisplayLabels": {
+        "event.setPowerSavingMode": "省电模式"
+      },
+      "assets": [
+        {
+          "id": "asset.icon_charge",
+          "src": "resources/base/media/ux_golden_asset_bolt_white.svg",
+          "description": "充电/闪电图标，低电模式",
+          "sceneTags": [
+            "battery",
+            "power"
+          ]
+        },
+        {
+          "id": "asset.icon_save_power",
+          "src": "resources/base/media/ux_golden_asset_save_power_white.svg",
+          "description": "省电图标，低电模式"
+        }
+      ],
+      "cardTemplate": {
+        "themeProfileId": "system-low-power-blue",
+        "requestTemplateIds": [
+          "ux-battery-overview@2"
+        ],
+        "headerTextCandidates": [
+          {
+            "key": "title.low-power",
+            "role": "title",
+            "text": "电量低"
+          }
+        ],
+        "requiredChrome": {
+          "titleKey": "title.low-power",
+          "iconAssetId": "asset.icon_charge",
+          "actionId": "event.setPowerSavingMode"
+        }
+      },
+      "providerContractStatus": "compatible",
+      "providerContractGaps": [],
+      "rawHybridSource": "HeroActionLayout(Template(\"ux-battery-overview@2\", \"medium\", { batterySOC: 18, batterySOCText: \"18%\", batteryCapacityLevelDesc: \"手机电量低于20%，建议开启省电模式\", chargingStatusDesc: \"未充电\", batteryIcon: \"resources/base/media/ux_golden_asset_bolt_white.svg\" }), PillAction({ actionId: \"event.setPowerSavingMode\", icon: \"resources/base/media/ux_golden_asset_save_power_white.svg\" }));",
+      "goldenFile": "low-power.a2ui.jsonl",
+      "goldenSha256": "05799d4a88377c29709dbe11dbc74536e9348fa65e1bb7c35478302bff980e4f",
+      "goldenSummary": {
+        "visibleTexts": [
+          "电量低",
+          "18%",
+          "手机电量低于",
+          "20%，建议开",
+          "启省电模式",
+          "省电模式"
+        ],
+        "actionIds": [],
+        "componentTypes": {
+          "Column": 2,
+          "Row": 3,
+          "Image": 2,
+          "Text": 7,
+          "Stack": 1,
+          "Progress": 2
+        },
+        "componentCount": 17,
+        "rootComponent": "Column",
+        "rootStyles": {
+          "width": "matchParent",
+          "height": 140,
+          "padding": 10,
+          "borderRadius": 18,
+          "clip": true,
+          "justifyContent": "spaceBetween",
+          "alignItems": "center",
+          "linearGradient": {
+            "direction": "Bottom",
+            "colors": [
+              [
+                "#06225C",
+                0
+              ],
+              [
+                "#0B55CB",
+                0.58
+              ],
+              [
+                "#4A9BFF",
+                1
+              ]
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "sleep",
+      "fixtureId": "ux.sleep.2x2.v1",
+      "userQuery": "生成一张展示睡眠状态并支持设置早睡提醒的2×2卡片",
+      "title": "睡眠不足",
+      "description": "5小时45分",
+      "cardSize": "2x2",
+      "dataEntries": [
+        {
+          "capabilityId": "GetHealthAndSportSummary",
+          "dataSlice": {
+            "sleepStatus": "睡眠不足",
+            "nightSleepDurationText": "5小时45分钟",
+            "fallAsleepTimeText": "23:15",
+            "wakeupTimeText": "05:00",
+            "updatedAt": "2026-08-11 08:00"
+          }
+        }
+      ],
+      "eventDisplayLabels": {
+        "event.open.clock.alarm": "早睡提醒"
+      },
+      "assets": [
+        {
+          "id": "asset.icon_sleep",
+          "src": "resources/base/media/ux_golden_asset_sleep_white.svg",
+          "description": "睡眠图标，睡眠监督"
+        }
+      ],
+      "cardTemplate": {
+        "themeProfileId": "sleep-night-violet",
+        "requestTemplateIds": [
+          "ux-sleep-overview@2"
+        ],
+        "headerTextCandidates": [
+          {
+            "key": "title.sleep-status",
+            "role": "title",
+            "text": "睡眠不足"
+          }
+        ],
+        "requiredChrome": {
+          "titleKey": "title.sleep-status",
+          "iconAssetId": "asset.icon_sleep",
+          "actionId": "event.open.clock.alarm"
+        }
+      },
+      "providerContractStatus": "compatible",
+      "providerContractGaps": [],
+      "rawHybridSource": "HeroActionLayout(Template(\"ux-sleep-overview@2\", \"medium\", { sleepStatus: \"睡眠不足\", nightSleepDurationText: \"5小时45分钟\", fallAsleepTimeText: \"23:15\", wakeupTimeText: \"05:00\" }), PillAction({ actionId: \"event.open.clock.alarm\", icon: \"resources/base/media/ux_golden_asset_sleep_white.svg\" }));",
+      "goldenFile": "sleep.a2ui.jsonl",
+      "goldenSha256": "ef30b4dc3f64c85f90f0a3fec0b982f5b67c510ee7c7bb2c933ccd9d1add733e",
+      "goldenSummary": {
+        "visibleTexts": [
+          "睡眠不足",
+          "6",
+          "小时",
+          "45",
+          "分",
+          "设置早睡提醒"
+        ],
+        "actionIds": [],
+        "componentTypes": {
+          "Column": 2,
+          "Row": 5,
+          "Image": 3,
+          "Text": 6,
+          "Stack": 1,
+          "Progress": 1
+        },
+        "componentCount": 18,
+        "rootComponent": "Column",
+        "rootStyles": {
+          "width": "matchParent",
+          "height": 140,
+          "padding": 9,
+          "borderRadius": 18,
+          "clip": true,
+          "justifyContent": "spaceBetween",
+          "alignItems": "center",
+          "linearGradient": {
+            "direction": "RightBottom",
+            "colors": [
+              [
+                "#211044",
+                0
+              ],
+              [
+                "#3C126E",
+                0.43
+              ],
+              [
+                "#6C16F2",
+                1
+              ]
+            ]
+          },
+          "shadow": {
+            "radius": 18,
+            "color": "#442B18FF",
+            "offsetX": 0,
+            "offsetY": 7,
+            "fill": false,
+            "type": "color",
+            "style": "outer"
+          }
+        }
+      }
+    },
+    {
+      "id": "family-care-weather",
+      "fixtureId": "ux.family-care-weather.2x2.v1",
+      "userQuery": "生成一张展示亲人所在地天气关怀信息并支持拨打电话的2×2卡片",
+      "title": "深圳",
+      "description": "38° 晴 空气优",
+      "cardSize": "2x2",
+      "dataEntries": [
+        {
+          "capabilityId": "ViewWeather",
+          "dataSlice": {
+            "location": {
+              "districtName": "深圳",
+              "prefectureName": "深圳市"
+            },
+            "current": {
+              "temperatureText": "38°",
+              "condition": "晴",
+              "airQuality": "空气优"
+            },
+            "daily": [
+              {
+                "temperatureRangeText": "26° / 16°"
+              }
+            ],
+            "updatedAt": "2026-08-11 10:00"
+          }
+        }
+      ],
+      "eventDisplayLabels": {
+        "event.call.phone": "拨打电话"
+      },
+      "assets": [
+        {
+          "id": "asset.icon_weather1",
+          "src": "resources/base/media/ux_golden_asset_icon_weather1.svg",
+          "description": "天气/雨伞图标，亲人关怀",
+          "sceneTags": [
+            "condition"
+          ]
+        },
+        {
+          "id": "asset.icon_high_temperature",
+          "src": "resources/base/media/ux_golden_asset_thermometer_sun_fill.svg",
+          "description": "高温/温度计图标，亲人关怀",
+          "sceneTags": [
+            "alert"
+          ]
+        },
+        {
+          "id": "asset.icon_call",
+          "src": "resources/base/media/ux_golden_asset_call_white.svg",
+          "description": "电话图标，亲人关怀"
+        }
+      ],
+      "cardTemplate": {
+        "themeProfileId": "family-weather-care-blue",
+        "requestTemplateIds": [
+          "ux-weather-overview@2"
+        ],
+        "headerTextCandidates": [],
+        "requiredChrome": {},
+        "contentActionIds": [
+          "event.call.phone"
+        ]
+      },
+      "providerContractStatus": "compatible",
+      "providerContractGaps": [],
+      "rawHybridSource": "SingleFocusLayout(Template(\"ux-weather-overview@2\", \"medium\", { city: \"深圳\", conditionIcon: \"resources/base/media/ux_golden_asset_icon_weather1.svg\", temperature: \"38°\", condition: \"晴\", airQuality: \"空气优\", temperatureRange: \"26° / 16°\" }), IconAction({ actionId: \"event.call.phone\", icon: \"resources/base/media/ux_golden_asset_call_white.svg\" }));",
+      "goldenFile": "family-care-weather.a2ui.jsonl",
+      "goldenSha256": "10a96e824cf6699d0164bafdb32ae5ea31bc0477afea6f66b33a1016c1c32b0b",
+      "goldenSummary": {
+        "visibleTexts": [
+          "31°",
+          "高温预警",
+          "Shenzhen",
+          "🤧 感冒指数",
+          "易发"
+        ],
+        "actionIds": [],
+        "componentTypes": {
+          "Column": 3,
+          "Row": 4,
+          "Text": 5,
+          "Image": 3,
+          "Stack": 1
+        },
+        "componentCount": 16,
+        "rootComponent": "Column",
+        "rootStyles": {
+          "width": "matchParent",
+          "height": 140,
+          "padding": 10,
+          "borderRadius": 18,
+          "clip": true,
+          "linearGradient": {
+            "direction": "Bottom",
+            "colors": [
+              [
+                "#072973",
+                0
+              ],
+              [
+                "#5e93ff",
+                1
+              ]
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "rainy-commute",
+      "fixtureId": "ux.rainy-commute.2x2.v1",
+      "userQuery": "生成一张展示深圳雨天天气并支持打车的2×2卡片",
+      "title": "深圳",
+      "description": "12° 雨 空气优",
+      "cardSize": "2x2",
+      "dataEntries": [
+        {
+          "capabilityId": "ViewWeather",
+          "dataSlice": {
+            "location": {
+              "districtName": "深圳",
+              "prefectureName": "深圳市"
+            },
+            "current": {
+              "temperatureText": "12°",
+              "condition": "雨",
+              "airQuality": "空气优"
+            },
+            "daily": [
+              {
+                "temperatureRangeText": "12° / 9°"
+              }
+            ],
+            "updatedAt": "2026-08-11 10:00"
+          }
+        }
+      ],
+      "eventDisplayLabels": {
+        "event.startNavigate": "打车"
+      },
+      "assets": [
+        {
+          "id": "asset.icon_weather1",
+          "src": "resources/base/media/ux_golden_asset_icon_weather1.svg",
+          "description": "天气状态图标，雨天通勤",
+          "sceneTags": [
+            "condition",
+            "weather"
+          ]
+        },
+        {
+          "id": "asset.icon_car",
+          "src": "resources/base/media/ux_golden_asset_car_white.svg",
+          "description": "汽车/打车图标，雨天打车"
+        }
+      ],
+      "cardTemplate": {
+        "themeProfileId": "rainy-commute-gray-blue",
+        "requestTemplateIds": [
+          "ux-weather-overview@2"
+        ],
+        "headerTextCandidates": [],
+        "requiredChrome": {
+          "actionId": "event.startNavigate"
+        }
+      },
+      "providerContractStatus": "compatible",
+      "providerContractGaps": [],
+      "rawHybridSource": "SingleFocusLayout(Template(\"ux-weather-overview@2\", \"medium\", { city: \"深圳\", conditionIcon: \"resources/base/media/ux_golden_asset_icon_weather1.svg\", temperature: \"12°\", condition: \"雨\", airQuality: \"空气优\", temperatureRange: \"12° / 9°\" }), IconAction({ actionId: \"event.startNavigate\", icon: \"resources/base/media/ux_golden_asset_car_white.svg\" }));",
+      "goldenFile": "rainy-commute.a2ui.jsonl",
+      "goldenSha256": "bf486a12ff75db4db16471b6857b709ba6edb4dbf279ef1b449f174b7066e881",
+      "goldenSummary": {
+        "visibleTexts": [
+          "⛈️",
+          "31°",
+          "Shenzhen",
+          "项目阶段性汇报",
+          "10:30-11:30 AM",
+          "打车去公司"
+        ],
+        "actionIds": [],
+        "componentTypes": {
+          "Column": 3,
+          "Row": 3,
+          "Stack": 1,
+          "Text": 6,
+          "Divider": 1,
+          "Image": 1
+        },
+        "componentCount": 15,
+        "rootComponent": "Column",
+        "rootStyles": {
+          "width": "matchParent",
+          "height": 140,
+          "padding": 8,
+          "borderRadius": 18,
+          "clip": true,
+          "justifyContent": "spaceBetween",
+          "linearGradient": {
+            "direction": "RightBottom",
+            "colors": [
+              [
+                "#B9C7D9",
+                0
+              ],
+              [
+                "#9AA9C7",
+                0.55
+              ],
+              [
+                "#8191B7",
+                1
+              ]
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "device-clean",
+      "fixtureId": "ux.device-clean.2x2.v1",
+      "userQuery": "生成一张展示存储和内存占用并支持一键清理的2×2卡片",
+      "title": "内存不足",
+      "description": "存储87%，内存72%",
+      "cardSize": "2x2",
+      "dataEntries": [
+        {
+          "capabilityId": "GetSystemMemInfo",
+          "dataSlice": {
+            "totalMemText": "8.00 GB",
+            "freeMemText": "0.80 GB",
+            "availableMemText": "1.04 GB",
+            "usagePercent": 87
+          }
+        }
+      ],
+      "eventDisplayLabels": {
+        "event.clean.memory": "一键清理"
+      },
+      "assets": [
+        {
+          "id": "asset.icon_electricity",
+          "src": "resources/base/media/ux_golden_asset_electricity_gray.svg",
+          "description": "电池图标，低电模式"
+        },
+        {
+          "id": "asset.icon_earphone",
+          "src": "resources/base/media/ux_golden_asset_earphone_gray.svg",
+          "description": "耳机图标，戴耳机播控"
+        },
+        {
+          "id": "asset.icon_phone",
+          "src": "resources/base/media/ux_golden_asset_phone_gray.svg",
+          "description": "手机图标，专注模式"
+        },
+        {
+          "id": "asset.icon_clear",
+          "src": "resources/base/media/ux_golden_asset_clear_gray.svg",
+          "description": "清除图标，清理无忧"
+        }
+      ],
+      "cardTemplate": {
+        "themeProfileId": "device-clean-blue-teal",
+        "requestTemplateIds": [
+          "ux-resource-usage-overview@2"
+        ],
+        "headerTextCandidates": [],
+        "requiredChrome": {
+          "actionId": "event.clean.memory"
+        }
+      },
+      "providerContractStatus": "partial",
+      "providerContractGaps": [
+        "GetSystemMemInfo 仅提供一个内存指标，Golden 的存储/内存双指标不进入生产绑定"
+      ],
+      "rawHybridSource": "HeroActionLayout(Template(\"ux-resource-usage-overview@2\", \"medium\", { usagePercent: 87, availableMemText: \"1.04 GB\", totalMemText: \"8.00 GB\" }), PillAction({ actionId: \"event.clean.memory\", icon: \"resources/base/media/ux_golden_asset_clear_gray.svg\" }));",
+      "goldenFile": "device-clean.a2ui.jsonl",
+      "goldenSha256": "b6fa9707c5ed625111deedf82db8c64b2bb7e97a6ce8593d93282141898ba9e1",
+      "goldenSummary": {
+        "visibleTexts": [
+          "内存已使用",
+          "87%",
+          "一键清理"
+        ],
+        "actionIds": [],
+        "componentTypes": {
+          "Column": 2,
+          "Row": 3,
+          "Stack": 4,
+          "Progress": 4,
+          "Image": 5,
+          "Text": 3
+        },
+        "componentCount": 21,
+        "rootComponent": "Column",
+        "rootStyles": {
+          "width": "matchParent",
+          "height": 140,
+          "padding": 8,
+          "borderRadius": 18,
+          "clip": true,
+          "justifyContent": "spaceBetween",
+          "alignItems": "center",
+          "linearGradient": {
+            "direction": "Bottom",
+            "colors": [
+              [
+                "#102D38",
+                0
+              ],
+              [
+                "#0A466A",
+                0.6
+              ],
+              [
+                "#006995",
+                1
+              ]
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "digital-wellbeing",
+      "fixtureId": "ux.digital-wellbeing.2x2.v1",
+      "userQuery": "生成一张展示应用使用时长并支持设置管控时间的2×2卡片",
+      "title": "使用时长",
+      "description": "3小时45分钟，已超15分",
+      "cardSize": "2x2",
+      "dataEntries": [
+        {
+          "capabilityId": "GetAppUsageDuration",
+          "dataSlice": {
+            "appUsage": {
+              "appName": "抖音",
+              "durationText": "3小时45分钟"
+            },
+            "updatedAt": "今日"
+          }
+        }
+      ],
+      "eventDisplayLabels": {
+        "event.open.settings.parentControl": "管控时间"
+      },
+      "assets": [
+        {
+          "id": "asset.icon_tiktok",
+          "src": "resources/base/media/ux_golden_asset_icon_tiktok.png",
+          "description": "抖音图标，防沉迷"
+        },
+        {
+          "id": "asset.icon_timing",
+          "src": "resources/base/media/ux_golden_asset_icon_timing.svg",
+          "description": "计时图标，防沉迷"
+        }
+      ],
+      "cardTemplate": {
+        "themeProfileId": "digital-wellbeing-neutral-dark",
+        "requestTemplateIds": [
+          "ux-app-usage-overview@2"
+        ],
+        "headerTextCandidates": [
+          {
+            "key": "title.app-usage",
+            "role": "title",
+            "text": "抖音使用时长"
+          }
+        ],
+        "requiredChrome": {
+          "titleKey": "title.app-usage",
+          "iconAssetId": "asset.icon_tiktok",
+          "actionId": "event.open.settings.parentControl"
+        }
+      },
+      "providerContractStatus": "partial",
+      "providerContractGaps": [
+        "GetAppUsageDuration 没有限额、使用比例和超时量字段，Golden 的分段进度与已超15分仅作视觉目标"
+      ],
+      "rawHybridSource": "HeroActionLayout(Template(\"ux-app-usage-overview@2\", \"medium\", { appName: \"抖音\", durationText: \"3小时45分钟\", updatedAt: \"今日\" }), PillAction({ actionId: \"event.open.settings.parentControl\", icon: \"resources/base/media/ux_golden_asset_icon_timing.svg\" }));",
+      "goldenFile": "digital-wellbeing.a2ui.jsonl",
+      "goldenSha256": "a1d0d3d4aa40b48538308caaf64d6be6015940030b8222458a9c1d48cb89ac52",
+      "goldenSummary": {
+        "visibleTexts": [
+          "抖音使用时长",
+          "时长设定",
+          "3h 45m",
+          "已超时",
+          "15m",
+          "设定管控时间"
+        ],
+        "actionIds": [],
+        "componentTypes": {
+          "Column": 3,
+          "Row": 6,
+          "Image": 2,
+          "Text": 9,
+          "Stack": 1
+        },
+        "componentCount": 21,
+        "rootComponent": "Column",
+        "rootStyles": {
+          "width": "matchParent",
+          "height": 140,
+          "padding": 10,
+          "borderRadius": 18,
+          "clip": true,
+          "justifyContent": "spaceBetween",
+          "alignItems": "center",
+          "linearGradient": {
+            "direction": "RightBottom",
+            "colors": [
+              [
+                "#08090A",
+                0
+              ],
+              [
+                "#17191B",
+                0.58
+              ],
+              [
+                "#2B2C2E",
+                1
+              ]
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "race-countdown",
+      "fixtureId": "ux.race-countdown.2x2.v1",
+      "userQuery": "生成一张展示香H100越野赛倒计时和30km慢跑计划的2×2卡片",
+      "title": "越野赛倒计时",
+      "description": "30km慢跑",
+      "cardSize": "2x2",
+      "dataEntries": [
+        {
+          "capabilityId": "GetCountdownDays",
+          "dataSlice": {
+            "countdownDays": 32
+          }
+        }
+      ],
+      "eventDisplayLabels": {
+        "event.open.health.sport": "30km慢跑"
+      },
+      "assets": [
+        {
+          "id": "asset.icon_schedule2",
+          "src": "resources/base/media/ux_golden_asset_calendar_lavender.svg",
+          "description": "日程图标，当下日程",
+          "sceneTags": [
+            "calendar",
+            "schedule"
+          ]
+        },
+        {
+          "id": "asset.icon_run",
+          "src": "resources/base/media/ux_golden_asset_figure_run_white.svg",
+          "description": "运动/跑步图标，当下日程"
+        }
+      ],
+      "cardTemplate": {
+        "themeProfileId": "race-sunrise-action",
+        "requestTemplateIds": [
+          "ux-workout-overview@2"
+        ],
+        "headerTextCandidates": [],
+        "requiredChrome": {},
+        "contentActionIds": [
+          "event.open.health.sport"
+        ],
+        "contentAssetIds": [
+          "asset.icon_schedule2"
+        ]
+      },
+      "providerContractStatus": "partial",
+      "providerContractGaps": [
+        "GetCountdownDays 只提供剩余天数，赛事名称、训练距离与计划不能由生产模型补全"
+      ],
+      "rawHybridSource": "HeroActionLayout(Template(\"ux-workout-overview@2\", \"hero\", { countdownDays: 32 }), PillAction({ actionId: \"event.open.health.sport\", icon: \"resources/base/media/ux_golden_asset_figure_run_white.svg\" }));",
+      "goldenFile": "race-countdown.a2ui.jsonl",
+      "goldenSha256": "6e6d921ae4a7f4ed10e43a937d9862e05b67d0b811fb43c1f257d7110555aa70",
+      "goldenSummary": {
+        "visibleTexts": [
+          "距离大湾区城市马拉松",
+          "32",
+          "天",
+          "今日训练计划",
+          "8km配速慢跑"
+        ],
+        "actionIds": [],
+        "componentTypes": {
+          "Column": 4,
+          "Row": 3,
+          "Image": 2,
+          "Text": 5
+        },
+        "componentCount": 14,
+        "rootComponent": "Column",
+        "rootStyles": {
+          "width": "matchParent",
+          "height": 140,
+          "padding": 9,
+          "borderRadius": 18,
+          "clip": true,
+          "backgroundColor": "#191D2B",
+          "linearGradient": {
+            "direction": "RightBottom",
+            "colors": [
+              [
+                "#171823",
+                0
+              ],
+              [
+                "#20245A",
+                0.56
+              ],
+              [
+                "#7164FF",
+                1
+              ]
+            ]
+          },
+          "shadow": {
+            "radius": 18,
+            "color": "#553654FF",
+            "offsetX": 0,
+            "offsetY": 6,
+            "fill": false,
+            "type": "color",
+            "style": "outer"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+.git
+.github
+**/.DS_Store
+**/.env
+**/env
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/__pycache__
+**/.venv
+**/.venv312
+**/dist
+**/logs
+**/test_reports
+**/workspace
+**/.zcode

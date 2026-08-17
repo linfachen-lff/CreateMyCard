@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import sys
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -99,9 +100,7 @@ class A2UIModelClient:
             raise ValueError(f"Unsupported A2UI model backend: {backend}")
         settings = get_settings()
         self.settings = settings
-        self.use_mock = (
-            settings.enable_a2ui_model_mock if use_mock is None else use_mock
-        )
+        self.use_mock = settings.enable_a2ui_model_mock if use_mock is None else use_mock
         self.backend = backend
         self.transport = transport
         self.mock_data_path = Path(mock_data_path) if mock_data_path else None
@@ -116,6 +115,7 @@ class A2UIModelClient:
                 self.runtime,
                 operation_name=operation_name,
             )
+        self.model_step_records: list[dict[str, object]] = []
 
     @property
     def model_failure_retry_count(self) -> int:
@@ -198,6 +198,46 @@ class A2UIModelClient:
             return await result
         return result
 
+    async def generate_json(
+        self,
+        prompt: list[dict[str, str]],
+        *,
+        phase: str,
+    ) -> dict:
+        """调用同一模型后端并解析 JSON，供高级组件规划和参数映射使用。"""
+        if self.use_mock:
+            raise A2UIModelGenerationError(
+                "structured model generation is unavailable in mock mode"
+            )
+        try:
+            raw_output = await self._call_transport(
+                prompt,
+                {"id": "advanced-component-json"},
+                phase=phase,
+            )
+            payload = raw_output.strip()
+            for fence in ("```json", "```JSON", "```"):
+                if payload.startswith(fence):
+                    payload = payload[len(fence) :].strip()
+                    if payload.endswith("```"):
+                        payload = payload[:-3].strip()
+                    break
+            parsed = json_repair.loads(payload)
+            if not isinstance(parsed, dict):
+                raise A2UIModelGenerationError("structured model output must be an object")
+            logger.info(
+                f"{_MODULE} structured_generation_completed phase={phase} field_count={len(parsed)}"
+            )
+            return parsed
+        except A2UIModelGenerationError:
+            raise
+        except Exception as exc:
+            logger.error(
+                f"{_MODULE} structured_generation_failed phase={phase} "
+                f"exception_type={type(exc).__name__} exception={exc!r}"
+            )
+            raise A2UIModelGenerationError("structured model generation failed") from exc
+
     async def _call_transport(
         self,
         prompt: list[dict[str, str]],
@@ -206,32 +246,63 @@ class A2UIModelClient:
         phase: str,
     ) -> str:
         """调用注入的测试 Transport 或应用级共享模型 Runtime。"""
-        if self.transport is not None:
-            try:
+        started_at = time.perf_counter()
+        try:
+            if self.transport is not None:
                 generate = self.transport.generate
                 if inspect.iscoroutinefunction(generate):
-                    return await generate(prompt)
-                result = await asyncio.to_thread(generate, prompt)
-                if inspect.isawaitable(result):
-                    return await result
-                return result
-            except ModelTransportError as exc:
-                return self._recover_design_output_after_abort(
-                    exc,
-                    protocol_profile,
+                    raw_output = await generate(prompt)
+                else:
+                    result = await asyncio.to_thread(generate, prompt)
+                    raw_output = await result if inspect.isawaitable(result) else result
+            else:
+                if self.unified_client is None:
+                    raise A2UIModelGenerationError("model runtime is not initialized")
+                allow_partial_abort = protocol_profile.get("id") == DESIGN_COMPACT_PROFILE_ID
+                raw_output = await self.unified_client.generate(
+                    self.backend,
+                    prompt,
+                    self.request_context,
+                    phase=phase,
+                    allow_mep_partial_abort=allow_partial_abort,
                 )
-        if self.unified_client is None:
-            raise A2UIModelGenerationError("model runtime is not initialized")
-        allow_partial_abort = (
-            protocol_profile.get("id") == DESIGN_COMPACT_PROFILE_ID
-        )
-        return await self.unified_client.generate(
-            self.backend,
-            prompt,
-            self.request_context,
-            phase=phase,
-            allow_mep_partial_abort=allow_partial_abort,
-        )
+            self._record_model_step(phase, started_at, "success", str(raw_output), prompt=prompt)
+            return str(raw_output)
+        except ModelTransportError as exc:
+            try:
+                recovered = self._recover_design_output_after_abort(exc, protocol_profile)
+            except ModelTransportError:
+                self._record_model_step(phase, started_at, "failed", "", exc, prompt=prompt)
+                raise
+            self._record_model_step(phase, started_at, "recovered", recovered, prompt=prompt)
+            return recovered
+        except Exception as exc:
+            self._record_model_step(phase, started_at, "failed", "", exc, prompt=prompt)
+            raise
+
+    def _record_model_step(
+        self,
+        phase: str,
+        started_at: float,
+        status: str,
+        raw_output: str,
+        error: Exception | None = None,
+        *,
+        prompt: list[dict[str, str]] | None = None,
+    ) -> None:
+        record: dict[str, object] = {
+            "sequence": len(self.model_step_records) + 1,
+            "phase": phase,
+            "status": status,
+            "durationMs": round((time.perf_counter() - started_at) * 1000, 2),
+            "rawOutput": raw_output,
+        }
+        if error is not None:
+            record["errorType"] = type(error).__name__
+            record["errorMessage"] = str(error)
+        if self.settings.enable_widget_batch_recording and prompt is not None:
+            record["inputMessages"] = prompt
+        self.model_step_records.append(record)
 
     def _default_request_context(self) -> ModelRequestContext:
         """为本地直调和单元测试生成不含硬编码会话 ID 的上下文。"""
@@ -251,17 +322,12 @@ class A2UIModelClient:
     ) -> str:
         """按目标 DSL 格式统一处理各模型后端的原始输出。"""
         dsl_text = self.extract_genui_payload(raw_output)
-        is_terse_nested2 = (
-            protocol_profile.get("id") == TERSE_DSL_NESTED2_PROFILE_ID
-        )
-        is_design_compact = (
-            protocol_profile.get("id") == DESIGN_COMPACT_PROFILE_ID
-        )
+        is_terse_nested2 = protocol_profile.get("id") == TERSE_DSL_NESTED2_PROFILE_ID
+        is_design_compact = protocol_profile.get("id") == DESIGN_COMPACT_PROFILE_ID
         if not is_design_compact and not is_terse_nested2:
             dsl_text = self.convert_dsl(dsl_text)
         logger.info(
-            f"{_MODULE} dsl_processed backend={self.backend} "
-            f"dsl_content={json_for_log(dsl_text)}"
+            f"{_MODULE} dsl_processed backend={self.backend} dsl_length={len(dsl_text)}"
         )
         return dsl_text
 
@@ -300,9 +366,7 @@ class A2UIModelClient:
             raise FileNotFoundError(f"A2UI mock 数据文件不存在: {mock_data_path}")
 
         mock_data = mock_data_path.read_text(encoding="utf-8")
-        logger.info(
-            f"{_MODULE} generate_completed mode=mock path={mock_data_path}"
-        )
+        logger.info(f"{_MODULE} generate_completed mode=mock path={mock_data_path}")
         return mock_data
 
     @staticmethod
@@ -342,9 +406,9 @@ class A2UIModelClient:
         否则原样返回。
         """
         text = text.strip()
-        if text.startswith('```genui'):
-            content = text[len('```genui'):].strip()
-            if content.endswith('```'):
+        if text.startswith("```genui"):
+            content = text[len("```genui") :].strip()
+            if content.endswith("```"):
                 content = content[:-3].strip()
             return content
         else:
@@ -362,9 +426,7 @@ class A2UIModelClient:
         """使用 Design profile 自带的协议文件把 Design Compact DSL 转为标准 A2UI。"""
         compact_dsl = self.extract_genui_payload(design_dsl)
         try:
-            protocol_profile = A2UIProtocolRegistry.read_design_protocol_profile(
-                design_profile_id
-            )
+            protocol_profile = A2UIProtocolRegistry.read_design_protocol_profile(design_profile_id)
             converted_dsl = convert_compact_dsl_to_a2ui(
                 compact_dsl,
                 size=size,
@@ -374,7 +436,7 @@ class A2UIModelClient:
             )
             logger.info(
                 f"{_MODULE} design_dsl_conversion_completed "
-                f"converted_dsl={json_for_log(converted_dsl)}"
+                f"converted_length={len(converted_dsl)}"
             )
             return converted_dsl
         except CompactDslConversionError as exc:
@@ -420,7 +482,7 @@ class A2UIModelClient:
             # 修改 createSurface.catalogId
             create_surface = data.get("createSurface")
             if create_surface:
-                create_surface["catalogId"] = "ohos.a2ui.extended.catalog.form"
+                create_surface["catalogId"] = "ohos.a2ui.extended.catalog"
 
             # 修改 root 的宽高
             update_components = data.get("updateComponents")
@@ -432,9 +494,7 @@ class A2UIModelClient:
                         styles["height"] = "matchParent"
                         break
 
-            output_lines.append(
-                json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-            )
+            output_lines.append(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
 
         return "\n".join(output_lines)
 
@@ -563,12 +623,9 @@ def _build_design_test_task_spec() -> dict:
     }
 
 
-
 async def _run_main() -> int:
     """临时验证 Design Compact DSL 生成及标准 A2UI DSL 转换链路。"""
-    system_prompt = A2UIProtocolRegistry.read_design_prompt(
-        DESIGN_COMPACT_PROFILE_ID
-    )
+    system_prompt = A2UIProtocolRegistry.read_design_prompt(DESIGN_COMPACT_PROFILE_ID)
     task_spec = _build_design_test_task_spec()
     messages = [
         {"role": "system", "content": system_prompt},

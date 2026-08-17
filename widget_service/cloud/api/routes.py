@@ -2,13 +2,15 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import asyncio
 import json
+import secrets
 import time
 import traceback
 import uuid
 from contextlib import suppress
 from typing import Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
 
@@ -33,6 +35,14 @@ from models.service import (
     WidgetWebSocketResultMessage,
 )
 from services.capability_registry import CapabilityRegistry
+from services.widget_batch_store import (
+    WidgetBatchCaseRecord,
+    WidgetBatchContext,
+    WidgetBatchNotFoundError,
+    WidgetBatchRecordingDisabledError,
+    WidgetBatchStore,
+    utc_now,
+)
 from services.widget_directive import (
     WidgetDirectiveState,
     build_widget_directive_response,
@@ -133,6 +143,170 @@ def get_service(
     出参：WidgetGenerationService 实例。
     """
     return WidgetGenerationService(model_runtime=model_runtime)
+
+
+def _card_template_authorized(websocket: WebSocket) -> bool:
+    """校验 CardTemplate UX 兼容入口的静态 Bearer Token。"""
+    expected = get_settings().websocket_bearer_token
+    authorization = websocket.headers.get("authorization", "")
+    prefix = "Bearer "
+    if not expected or not authorization.startswith(prefix):
+        return False
+    return secrets.compare_digest(authorization[len(prefix) :], expected)
+
+
+def _batch_http_authorized(request: Request) -> bool:
+    """批测 HTTP 查询与工具 WebSocket 复用同一个静态 Bearer Token。"""
+    expected = get_settings().websocket_bearer_token
+    if not expected:
+        return True
+    authorization = request.headers.get("authorization", "")
+    prefix = "Bearer "
+    if not authorization.startswith(prefix):
+        return False
+    return secrets.compare_digest(authorization.removeprefix(prefix), expected)
+
+
+def _require_batch_http_access(request: Request, store: WidgetBatchStore) -> None:
+    """拒绝未授权或未开启的批测查询，不暴露运行时目录状态。"""
+    if not store.enabled:
+        raise HTTPException(status_code=404, detail="widget batch recording is disabled")
+    if not _batch_http_authorized(request):
+        raise HTTPException(
+            status_code=401,
+            detail="invalid bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def _widget_batch_http_error(exc: Exception) -> HTTPException:
+    """把批测存储错误映射为稳定 HTTP 状态码。"""
+    if isinstance(exc, WidgetBatchNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=400, detail=str(exc))
+    logger.error(
+        f"{_MODULE} widget_batch_http_failed exception_type={type(exc).__name__}",
+        exc_info=True,
+    )
+    return HTTPException(status_code=500, detail="widget batch storage failed")
+
+
+def _card_template_surface_metadata(messages: list[dict[str, Any]]) -> tuple[str, int]:
+    """从标准 A2UI 消息中提取 surfaceId 和最终 revision。"""
+    surface_id = ""
+    revision = 0
+    for message in messages:
+        create_surface = message.get("createSurface")
+        if isinstance(create_surface, dict):
+            surface_id = str(create_surface.get("surfaceId") or surface_id)
+        for key in ("updateComponents", "updateDataModel"):
+            update = message.get(key)
+            if isinstance(update, dict):
+                surface_id = str(update.get("surfaceId") or surface_id)
+                raw_revision = update.get("surfaceRevision")
+                if isinstance(raw_revision, int):
+                    revision = max(revision, raw_revision)
+    return surface_id, revision
+
+
+async def card_template_compat_ws(websocket: WebSocket) -> None:
+    """兼容端侧现有 card.generate 协议，并路由到 Python CardPlan 正式链路。"""
+    if not _card_template_authorized(websocket):
+        await websocket.close(code=1008, reason="invalid bearer token")
+        return
+    await websocket.accept()
+    try:
+        while True:
+            payload = await websocket.receive_json()
+            request_id = str(payload.get("requestId") or "") if isinstance(payload, dict) else ""
+            started_at = time.perf_counter()
+            try:
+                if not isinstance(payload, dict) or payload.get("type") != "card.generate":
+                    raise ValueError("only card.generate is supported")
+                if payload.get("pipeline", "card-plan-template") != "card-plan-template":
+                    raise ValueError("only card-plan-template pipeline is supported")
+                context = payload.get("context")
+                if not isinstance(context, dict):
+                    raise ValueError("context must be an object")
+                options = payload.get("options", {})
+                if not isinstance(options, dict):
+                    raise ValueError("options must be an object")
+                request = GenerateWidgetCardRequest(
+                    uid="card-template-ux",
+                    prdVer=get_settings().default_prd_version,
+                    device={"romVersion": get_settings().default_device_rom_version},
+                    userQuery=context.get("userQuery"),
+                    size=context.get("size", "2x2"),
+                    title=context.get("title"),
+                    description=context.get("description"),
+                    candidateDataBindings=context.get("candidateDataBindings", []),
+                    candidateEventCandidates=context.get("candidateEventCandidates", []),
+                    candidateAssetIds=context.get("candidateAssetIds", []),
+                    options=options,
+                )
+                model_runtime = getattr(websocket.app.state, "model_runtime", None)
+                result = await get_service(model_runtime).generate_widget_card_terse_dsl_nested2(
+                    request
+                )
+                messages = result.renderMessages
+                surface_id, surface_revision = _card_template_surface_metadata(messages)
+                if messages:
+                    await websocket.send_json(
+                        {
+                            "serviceProtocolVersion": "widget-service-card-template/1.0",
+                            "type": "card.generate.delta",
+                            "requestId": request_id,
+                            "ok": True,
+                            "phase": "body",
+                            "messages": messages,
+                            "diagnostics": [],
+                        }
+                    )
+                completed = result.status.value in {"success", "degraded"}
+                diagnostics = [] if completed else [
+                    {
+                        "severity": "error",
+                        "code": result.errorCode or "GENERATION_FAILED",
+                        "message": result.message,
+                    }
+                ]
+                await websocket.send_json(
+                    {
+                        "serviceProtocolVersion": "widget-service-card-template/1.0",
+                        "type": "card.generate.result",
+                        "requestId": request_id,
+                        "ok": completed,
+                        "status": "completed" if completed else "rejected",
+                        "pipeline": "card-plan-template",
+                        "surfaceId": surface_id,
+                        "surfaceRevision": surface_revision,
+                        "messages": messages,
+                        "diagnostics": diagnostics,
+                        "metrics": {
+                            "totalLatencyMs": round((time.perf_counter() - started_at) * 1000, 2),
+                            "totalInputTokens": -1,
+                            "totalOutputTokens": -1,
+                            "firstBodySubtreeMs": -1,
+                            "templateCallCount": result.templateCallCount,
+                            "expandedComponentCount": result.expandedComponentCount,
+                            "chromeFallbackUsed": False,
+                            "bodyFallbackUsed": result.generationFallbackUsed or not completed,
+                        },
+                    }
+                )
+            except (ValueError, ValidationError) as exc:
+                await websocket.send_json(
+                    {
+                        "serviceProtocolVersion": "widget-service-card-template/1.0",
+                        "type": "error",
+                        "requestId": request_id,
+                        "ok": False,
+                        "error": {"code": "INVALID_ARGUMENTS", "message": str(exc)},
+                    }
+                )
+    except WebSocketDisconnect:
+        return
 
 
 def _request_id_from_envelope(envelope: ToolRequestEnvelope) -> str | None:
@@ -497,6 +671,57 @@ async def _heartbeat_sender(
         logger.error(f"{_MODULE} widget_operation_ws_heartbeat_failed", exc_info=True)
 
 
+async def _record_widget_batch_case(
+    store: WidgetBatchStore | None,
+    context: WidgetBatchContext | None,
+    request_id: str | None,
+    raw_payload: dict[str, Any],
+    business_response: dict[str, Any],
+    final_frame: dict[str, Any],
+    render_messages: list[dict[str, Any]],
+    duration_ms: float,
+    started_at: str,
+    status: str,
+    error_code: str,
+    artifact_url: str = "",
+    artifact_digest: str = "",
+    model_steps: list[dict[str, Any]] | None = None,
+    diagnostics: dict[str, Any] | None = None,
+) -> None:
+    """批测记录失败不反向改变正式工具响应。"""
+    if store is None or context is None:
+        return
+    record = WidgetBatchCaseRecord(
+        context=context,
+        request_id=request_id,
+        raw_payload=raw_payload,
+        business_response=business_response,
+        final_frame=final_frame,
+        render_messages=render_messages,
+        duration_ms=duration_ms,
+        started_at=started_at,
+        completed_at=utc_now(),
+        status=status,
+        error_code=error_code,
+        artifact_url=artifact_url,
+        artifact_digest=artifact_digest,
+        model_steps=model_steps or [],
+        diagnostics=diagnostics or {},
+    )
+    try:
+        await run_in_threadpool(store.record_case, record)
+        logger.info(
+            f"{_MODULE} widget_batch_case_recorded batch_id={context.batch_id} "
+            f"case_id={context.case_id} status={status} duration_ms={duration_ms}"
+        )
+    except Exception:
+        logger.error(
+            f"{_MODULE} widget_batch_case_record_failed batch_id={context.batch_id} "
+            f"case_id={context.case_id}",
+            exc_info=True,
+        )
+
+
 async def _serve_operation_websocket(
     websocket: WebSocket,
     operation: str,
@@ -505,6 +730,8 @@ async def _serve_operation_websocket(
     heartbeat: bool = False,
     heartbeat_interval: float = 6.0,
     handler_in_threadpool: bool = True,
+    batch_store: WidgetBatchStore | None = None,
+    batch_context: WidgetBatchContext | None = None,
 ) -> None:
     """承载单个工具能力的 WebSocket 循环。
 
@@ -520,6 +747,9 @@ async def _serve_operation_websocket(
     出参：无；服务端通过 WebSocket 返回华为流处理插件格式消息。
     """
     # 每个 WS path 只承载一个业务能力，客户端不需要再传 operation 字段。
+    if get_settings().websocket_bearer_token and not _card_template_authorized(websocket):
+        await websocket.close(code=1008, reason="invalid bearer token")
+        return
     metrics = websocket_metrics
     await websocket.accept()
     metrics.connection_opened()
@@ -570,6 +800,7 @@ async def _serve_operation_websocket(
                 f"request_body={json_for_log(payload)}"
             )
             started_at = time.perf_counter()
+            batch_started_at = utc_now()
             request_id = None
             arguments: dict[str, Any] = {}
             heartbeat_task: asyncio.Task | None = None
@@ -594,6 +825,7 @@ async def _serve_operation_websocket(
                     source_rom_version = device_arguments.pop("_sourceRomVersion", None)
                 request = request_model(**arguments)
                 request.device._source_rom_version = source_rom_version
+                request._widget_batch_request = batch_context is not None
                 if operation in GENERATION_OPERATIONS:
                     request._model_request_context = _model_request_context_from_payload(
                         payload,
@@ -642,14 +874,17 @@ async def _serve_operation_websocket(
                 else:
                     # 心跳通道断开不取消内部生成、repair 或 artifact 保存。
                     async def send_model_start_command(
-                        resolved_size: WidgetSize,
+                        resolved_size: WidgetSize | None = None,
                         raw_payload=payload,
                         current_request_id=request_id,
                         current_streaming_text_id=streaming_text_id,
                         current_card_id=card_id,
                     ) -> None:
                         nonlocal directive_size, widget_directive_started
-                        directive_size = resolved_size
+                        directive_size = _normalize_directive_size(
+                            resolved_size,
+                            directive_size,
+                        )
                         command_enabled = _widget_directive_commands_enabled(operation)
                         command_sent = await _send_widget_directive_command(
                             websocket,
@@ -659,7 +894,7 @@ async def _serve_operation_websocket(
                             current_streaming_text_id,
                             WidgetDirectiveState.START,
                             current_card_id,
-                            resolved_size,
+                            directive_size,
                         )
                         if command_enabled and command_sent:
                             widget_directive_started = True
@@ -681,6 +916,32 @@ async def _serve_operation_websocket(
                     errorCode=result_data.get("errorCode", ""),
                     error={},
                 )
+                plugin_response = _build_plugin_stream_response(
+                    result_message,
+                    streaming_text_id,
+                )
+                plugin_response_data = plugin_response.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                )
+                render_messages = getattr(result, "renderMessages", [])
+                await _record_widget_batch_case(
+                    batch_store,
+                    batch_context,
+                    request_id,
+                    payload,
+                    result_data,
+                    plugin_response_data,
+                    render_messages,
+                    duration_ms,
+                    batch_started_at,
+                    str(result_data.get("status", "success")),
+                    str(result_data.get("errorCode", "")),
+                    str(result_data.get("artifactUrl", "")),
+                    str(result_data.get("artifactDigest", "")),
+                    getattr(result, "modelSteps", []),
+                    getattr(result, "batchDiagnostics", {}),
+                )
                 if operation in GENERATION_OPERATIONS and widget_directive_started:
                     directive_state, artifact_url = _generation_result_directive(result_data)
                     directive_size = _normalize_directive_size(
@@ -699,13 +960,9 @@ async def _serve_operation_websocket(
                         artifact_url,
                     ):
                         return
-                plugin_response = _build_plugin_stream_response(
-                    result_message,
-                    streaming_text_id,
-                )
                 if not await _send_websocket_json(
                     websocket,
-                    plugin_response.model_dump(mode="json", exclude_none=True),
+                    plugin_response_data,
                     operation,
                     request_id,
                     "final",
@@ -730,8 +987,29 @@ async def _serve_operation_websocket(
                         "details": _error_details(exc),
                     },
                 )
+                plugin_response = _build_plugin_stream_response(
+                    error_message,
+                    streaming_text_id,
+                )
+                plugin_response_data = plugin_response.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                )
+                raw_payload = payload if isinstance(payload, dict) else {"rawPayload": payload}
+                await _record_widget_batch_case(
+                    batch_store,
+                    batch_context,
+                    request_id,
+                    raw_payload,
+                    error_message.model_dump(mode="json", exclude_none=True),
+                    plugin_response_data,
+                    [],
+                    duration_ms,
+                    batch_started_at,
+                    "failed",
+                    "INVALID_ARGUMENTS",
+                )
                 if operation in GENERATION_OPERATIONS and widget_directive_started:
-                    raw_payload = payload if isinstance(payload, dict) else {}
                     if not await _send_widget_directive_command(
                         websocket,
                         raw_payload,
@@ -743,13 +1021,9 @@ async def _serve_operation_websocket(
                         directive_size,
                     ):
                         return
-                plugin_response = _build_plugin_stream_response(
-                    error_message,
-                    streaming_text_id,
-                )
                 if not await _send_websocket_json(
                     websocket,
-                    plugin_response.model_dump(mode="json", exclude_none=True),
+                    plugin_response_data,
                     operation,
                     request_id,
                     "final_error",
@@ -770,8 +1044,29 @@ async def _serve_operation_websocket(
                     errorCode="FAILED",
                     error={"message": str(exc)},
                 )
+                plugin_response = _build_plugin_stream_response(
+                    error_message,
+                    streaming_text_id,
+                )
+                plugin_response_data = plugin_response.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                )
+                raw_payload = payload if isinstance(payload, dict) else {"rawPayload": payload}
+                await _record_widget_batch_case(
+                    batch_store,
+                    batch_context,
+                    request_id,
+                    raw_payload,
+                    error_message.model_dump(mode="json", exclude_none=True),
+                    plugin_response_data,
+                    [],
+                    duration_ms,
+                    batch_started_at,
+                    "failed",
+                    "FAILED",
+                )
                 if operation in GENERATION_OPERATIONS and widget_directive_started:
-                    raw_payload = payload if isinstance(payload, dict) else {}
                     if not await _send_widget_directive_command(
                         websocket,
                         raw_payload,
@@ -783,13 +1078,9 @@ async def _serve_operation_websocket(
                         directive_size,
                     ):
                         return
-                plugin_response = _build_plugin_stream_response(
-                    error_message,
-                    streaming_text_id,
-                )
                 if not await _send_websocket_json(
                     websocket,
-                    plugin_response.model_dump(mode="json", exclude_none=True),
+                    plugin_response_data,
                     operation,
                     request_id,
                     "final_error",
@@ -806,6 +1097,69 @@ async def _serve_operation_websocket(
         return
     finally:
         metrics.connection_closed()
+
+
+@router.get("/artifacts/{file_name}")
+async def download_widget_artifact(file_name: str) -> FileResponse:
+    """下载本地 mock OBS 中的不可变卡片产物。"""
+    prefix = "artifact_"
+    suffix = ".md"
+    if not file_name.startswith(prefix) or not file_name.endswith(suffix):
+        raise HTTPException(status_code=404, detail="artifact not found")
+    artifact_id = file_name[len(prefix) : -len(suffix)]
+    try:
+        uuid.UUID(artifact_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="artifact not found") from exc
+    artifact_path = get_settings().WORKSPACE_ROOT / "mock_obs" / file_name
+    if not artifact_path.is_file():
+        raise HTTPException(status_code=404, detail="artifact not found")
+    return FileResponse(
+        artifact_path,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+@router.get("/widget-batches")
+async def list_widget_batches(request: Request) -> dict[str, Any]:
+    """列出服务器上已记录的 Nested-2 批测批次。"""
+    store = WidgetBatchStore()
+    _require_batch_http_access(request, store)
+    try:
+        return await run_in_threadpool(store.list_batches)
+    except Exception as exc:
+        raise _widget_batch_http_error(exc) from exc
+
+
+@router.get("/widget-batches/{batch_id}")
+async def get_widget_batch(request: Request, batch_id: str) -> dict[str, Any]:
+    """读取一个批次的 manifest 和用例统计。"""
+    store = WidgetBatchStore()
+    _require_batch_http_access(request, store)
+    try:
+        return await run_in_threadpool(store.get_batch, batch_id)
+    except Exception as exc:
+        raise _widget_batch_http_error(exc) from exc
+
+
+@router.get("/widget-batches/{batch_id}/download")
+async def download_widget_batch(request: Request, batch_id: str) -> Response:
+    """下载包含输入、输出和耗时信息的批次 ZIP。"""
+    store = WidgetBatchStore()
+    _require_batch_http_access(request, store)
+    try:
+        filename, content = await run_in_threadpool(store.build_download, batch_id)
+    except Exception as exc:
+        raise _widget_batch_http_error(exc) from exc
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
 
 
 @router.websocket("/ws/tools/getWidgetCapabilityOverview")
@@ -899,6 +1253,19 @@ async def generate_widget_card_compact_dsl_with_directive_ws(websocket: WebSocke
 @router.websocket("/ws/tools/generateWidgetCardTerseDslNested2")
 async def generate_widget_card_terse_dsl_nested2_ws(websocket: WebSocket):
     """TerseDSL-Nested-2 卡片生成 WebSocket 入口。"""
+    if get_settings().websocket_bearer_token and not _card_template_authorized(websocket):
+        await websocket.close(code=1008, reason="invalid bearer token")
+        return
+    store = WidgetBatchStore()
+    try:
+        context = store.context_from_query(
+            websocket.query_params,
+            "generateWidgetCardTerseDslNested2",
+        )
+    except (ValueError, WidgetBatchRecordingDisabledError) as exc:
+        logger.error(f"{_MODULE} widget_batch_query_rejected exception_type={type(exc).__name__}")
+        await websocket.close(code=1008, reason=str(exc))
+        return
     await _serve_operation_websocket(
         websocket,
         "generateWidgetCardTerseDslNested2",
@@ -910,4 +1277,6 @@ async def generate_widget_card_terse_dsl_nested2_ws(websocket: WebSocket):
         heartbeat=True,
         heartbeat_interval=6.0,
         handler_in_threadpool=False,
+        batch_store=store if context is not None else None,
+        batch_context=context,
     )
