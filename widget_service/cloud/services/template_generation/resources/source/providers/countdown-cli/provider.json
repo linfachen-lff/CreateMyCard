@@ -1,0 +1,27 @@
+{
+  "bundleFormat": "card-provider-bundle/1",
+  "providerId": "com.huawei.countdown.cli",
+  "providerVersion": "1.0.0-poc",
+  "capabilities": [
+    {
+      "capabilityId": "GetCountdownDays",
+      "dataSchema": {
+        "path": "capabilities/app-11.7.5.205_rom-6.0/data_capabilities.json",
+        "version": "app-11.7.5.205_rom-6.0"
+      },
+      "templates": ["WorkoutCountdown@1"]
+    }
+  ],
+  "templates": [
+    {
+      "templateId": "WorkoutCountdown@1",
+      "entry": "templates/workout-countdown.cardtpl",
+      "digest": "sha256:e99f164723d8325c1388a93bb70dc599b47ac3a5e776c2e6ab73a3324125c0d1"
+    }
+  ],
+  "compatibility": {
+    "templateLanguage": "cardtpl/1",
+    "catalogId": "ohos.a2ui.extended.catalog",
+    "a2uiWireVersion": "v0.9"
+  }
+}

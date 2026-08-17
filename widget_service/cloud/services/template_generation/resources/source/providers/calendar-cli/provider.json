@@ -1,0 +1,32 @@
+{
+  "bundleFormat": "card-provider-bundle/1",
+  "providerId": "com.huawei.calendar.cli",
+  "providerVersion": "1.0.0-poc",
+  "capabilities": [
+    {
+      "capabilityId": "GetCalendarEvents",
+      "dataSchema": {
+        "path": "capabilities/app-11.7.5.205_rom-6.0/data_capabilities.json",
+        "version": "app-11.7.5.205_rom-6.0"
+      },
+      "templates": ["DateOverview@1", "ScheduleOverview@1"]
+    }
+  ],
+  "templates": [
+    {
+      "templateId": "DateOverview@1",
+      "entry": "templates/date-overview.cardtpl",
+      "digest": "sha256:7a035a89715c51b03afc86709d44b199db52ac2a10e56ed84d1b3bd049638ca1"
+    },
+    {
+      "templateId": "ScheduleOverview@1",
+      "entry": "templates/schedule-overview.cardtpl",
+      "digest": "sha256:2e08fd0ba0a81e2384e503114e57b12199dea0d4ec3d35363c2eb7891f0ce272"
+    }
+  ],
+  "compatibility": {
+    "templateLanguage": "cardtpl/1",
+    "catalogId": "ohos.a2ui.extended.catalog",
+    "a2uiWireVersion": "v0.9"
+  }
+}
