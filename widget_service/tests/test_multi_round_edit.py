@@ -249,57 +249,31 @@ async def test_design_compact_edit_uses_previous_design_token(
 
 
 @pytest.mark.asyncio
-async def test_terse_edit_uses_previous_design_token(
-    editable_artifact_storage,
-    monkeypatch,
-):
+async def test_terse_edit_returns_failed_without_model_call(monkeypatch):
     service = WidgetGenerationService()
-    created = await service.generate_widget_card_terse_dsl_nested2(_static_request())
-    source = await asyncio.to_thread(
-        SourceArtifactRepository().load,
-        created.artifactUrl,
-    )
-    assert source.design_token
-    prompts: list[list[dict[str, str]]] = []
 
-    def generate_edit(_client, prompt, _profile=None, **_kwargs):
-        prompts.append(prompt)
-        return source.design_token
+    def unexpected_generate(*_args, **_kwargs):
+        pytest.fail("Terse edit must fail before model invocation")
 
-    monkeypatch.setattr(A2UIModelClient, "generate", generate_edit)
+    monkeypatch.setattr(A2UIModelClient, "generate", unexpected_generate)
     edited = await service.generate_widget_card_terse_dsl_nested2(
         GenerateWidgetCardRequest(
             uid="user-a",
             device={"romVersion": "6.0"},
             prdVer=APP_VERSION,
             userQuery="标题改成通勤天气",
-            sourceArtifactUrl=created.artifactUrl,
+            sourceArtifactUrl="https://obs.test/widget/source.md",
         )
     )
-    updated = await asyncio.to_thread(
-        SourceArtifactRepository().load,
-        edited.artifactUrl,
-    )
-    edit_payload = json.loads(prompts[0][1]["content"])
-    expected_system = A2UIProtocolRegistry.read_design_prompt("terse-dsl-nested-2")
 
-    assert edited.status in {GenerationStatus.SUCCESS, GenerationStatus.DEGRADED}
-    assert edited.artifactUrl != created.artifactUrl
-    assert len(prompts[0]) == 2
-    assert prompts[0][0] == {"role": "system", "content": expected_system}
-    assert edit_payload["userQuery"] == "标题改成通勤天气"
-    assert edit_payload["previousDesignToken"] == {
-        "format": "terse-dsl-nested-2",
-        "content": source.design_token,
-    }
-    assert updated.artifact.meta.generationMode == "edit"
-    assert updated.artifact.meta.sourceArtifactDigest == source.artifact_digest
-    assert updated.design_token == source.design_token
+    assert edited.status == GenerationStatus.FAILED
+    assert edited.errorCode == ErrorCode.A2UI_GENERATION_FAILED.value
+    assert edited.artifactUrl == ""
 
 
 @pytest.mark.parametrize(
     "generation_method",
-    ["generate_widget_card_compact_dsl", "generate_widget_card_terse_dsl_nested2"],
+    ["generate_widget_card_compact_dsl"],
 )
 @pytest.mark.asyncio
 async def test_source_format_edit_rejects_artifact_without_design_token(
@@ -315,41 +289,6 @@ async def test_source_format_edit_rejects_artifact_without_design_token(
 
     monkeypatch.setattr(A2UIModelClient, "generate", unexpected_generate)
     response = await getattr(service, generation_method)(
-        GenerateWidgetCardRequest(
-            uid="user-a",
-            device={"romVersion": "6.0"},
-            prdVer=APP_VERSION,
-            userQuery="修改卡片背景",
-            sourceArtifactUrl=created.artifactUrl,
-        )
-    )
-
-    assert response.status == GenerationStatus.FAILED
-    assert response.errorCode == ErrorCode.SOURCE_ARTIFACT_INVALID.value
-
-
-@pytest.mark.parametrize(
-    ("source_method", "target_method"),
-    [
-        ("generate_widget_card_compact_dsl", "generate_widget_card_terse_dsl_nested2"),
-        ("generate_widget_card_terse_dsl_nested2", "generate_widget_card_compact_dsl"),
-    ],
-)
-@pytest.mark.asyncio
-async def test_source_format_edit_rejects_cross_format_design_token(
-    editable_artifact_storage,
-    monkeypatch,
-    source_method,
-    target_method,
-):
-    service = WidgetGenerationService()
-    created = await getattr(service, source_method)(_static_request())
-
-    def unexpected_generate(*_args, **_kwargs):
-        pytest.fail("cross-format design token must fail before model invocation")
-
-    monkeypatch.setattr(A2UIModelClient, "generate", unexpected_generate)
-    response = await getattr(service, target_method)(
         GenerateWidgetCardRequest(
             uid="user-a",
             device={"romVersion": "6.0"},
@@ -479,55 +418,6 @@ async def test_design_edit_repair_saves_final_design_token(
 
 
 @pytest.mark.asyncio
-async def test_terse_edit_repair_saves_final_design_token(
-    editable_artifact_storage,
-    monkeypatch,
-):
-    settings = get_settings()
-    service = WidgetGenerationService()
-    created = await service.generate_widget_card_terse_dsl_nested2(_static_request())
-    source = await asyncio.to_thread(
-        SourceArtifactRepository().load,
-        created.artifactUrl,
-    )
-    assert source.design_token
-    outputs = iter(["invalid-terse-token", source.design_token])
-    prompts: list[list[dict[str, str]]] = []
-
-    def generate_edit(_client, prompt, _profile=None, **_kwargs):
-        prompts.append(prompt)
-        return next(outputs)
-
-    monkeypatch.setattr(settings, "enable_artifact_validation", False)
-    monkeypatch.setattr(settings, "enable_validation_failure_retry", True)
-    monkeypatch.setattr(settings, "validation_failure_max_repair_attempts", 1)
-    monkeypatch.setattr(A2UIModelClient, "generate", generate_edit)
-    edited = await service.generate_widget_card_terse_dsl_nested2(
-        GenerateWidgetCardRequest(
-            uid="user-a",
-            device={"romVersion": "6.0"},
-            prdVer=APP_VERSION,
-            userQuery="把背景改成蓝色",
-            sourceArtifactUrl=created.artifactUrl,
-        )
-    )
-    updated = await asyncio.to_thread(
-        SourceArtifactRepository().load,
-        edited.artifactUrl,
-    )
-
-    assert edited.status in {GenerationStatus.SUCCESS, GenerationStatus.DEGRADED}
-    assert len(prompts) == 2
-    assert updated.design_token == source.design_token
-    repair_payload = json.loads(prompts[1][1]["content"])
-    original_user = json.loads(repair_payload["originalUserContent"])
-    assert original_user["previousDesignToken"]["content"] == source.design_token
-    assert repair_payload["invalidSourceDsl"] == "invalid-terse-token"
-    assert repair_payload["dslFormat"] == "terse-dsl-nested-2"
-    assert repair_payload["qualityErrors"][0]["stage"] == "conversion"
-
-
-@pytest.mark.asyncio
 async def test_source_artifact_remote_mode_uses_shared_download_utility(
     editable_artifact_storage,
     monkeypatch,
@@ -631,7 +521,6 @@ def test_v1_artifact_is_reported_as_unsupported():
     [
         "generate_widget_card_a2ui_form",
         "generate_widget_card_compact_dsl",
-        "generate_widget_card_terse_dsl_nested2",
     ],
 )
 @pytest.mark.asyncio
@@ -794,7 +683,7 @@ def test_edit_directives_inherit_source_artifact_size(
 
 @pytest.mark.parametrize(
     "tool_name",
-    ["generateWidgetCardCompactDsl", "generateWidgetCardTerseDslNested2"],
+    ["generateWidgetCardCompactDsl"],
 )
 def test_source_format_websocket_create_and_edit_return_new_artifact(
     editable_artifact_storage,

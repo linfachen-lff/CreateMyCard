@@ -12,6 +12,7 @@ from models.capability import (
     AssetCapability,
     DataCapability,
     EventCapability,
+    FieldDependency,
     RemovedCapability,
 )
 from models.generation import CandidateDataBinding, DeviceContext, EventAction
@@ -154,12 +155,16 @@ class DeviceCapabilityResolver:
             if write_parts is None or len(write_parts) < 2 or write_parts[0] != "data":
                 removed.append(self._removed(binding.capabilityId, ErrorCode.INVALID_ARGUMENTS))
                 continue
+            enriched_fields = self._apply_field_dependencies(
+                binding.candidateOutputFields,
+                capability.fieldDependencies,
+            )
             effective_bindings.append(
                 CandidateDataBinding(
                     capabilityId=binding.capabilityId,
                     arguments=binding.arguments,
                     writeResultTo=write_result_to,
-                    candidateOutputFields=binding.candidateOutputFields,
+                    candidateOutputFields=enriched_fields,
                 )
             )
             effective_capabilities.append(capability)
@@ -310,6 +315,28 @@ class DeviceCapabilityResolver:
                 ):
                     return other_id or capability_id
         return None
+
+    @staticmethod
+    def _apply_field_dependencies(
+        requested_fields: list[str],
+        dependencies: list[FieldDependency],
+    ) -> list[str]:
+        """稳定补齐模板渲染依赖字段，同时保留调用方原始字段顺序。"""
+        enriched = list(requested_fields)
+        normalized_fields = {field.lstrip("/") for field in enriched}
+        for dependency in dependencies:
+            if not any(
+                trigger.lstrip("/") in normalized_fields
+                for trigger in dependency.triggerFields
+            ):
+                continue
+            for field in dependency.autoIncludeFields:
+                normalized = field.lstrip("/")
+                if normalized in normalized_fields:
+                    continue
+                enriched.append(f"/{normalized}")
+                normalized_fields.add(normalized)
+        return enriched
 
     def _removed(
         self,

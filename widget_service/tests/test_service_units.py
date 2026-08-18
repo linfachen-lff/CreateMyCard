@@ -168,72 +168,19 @@ def test_terse_dsl_nested2_rejects_executable_or_unsupported_input(source):
 
 
 @pytest.mark.asyncio
-async def test_terse_dsl_nested2_generation_uses_local_prompt_and_converter(monkeypatch):
-    source = """
-Column("card",
-  Text("静态天气", "title"),
-  Text("晴 26℃", "success")
-);
-"""
-    prompts: list[list[dict[str, str]]] = []
-    saved_genui: list[str] = []
-    selected_conversion_profiles: list[str] = []
-    original_protocol_reader = A2UIProtocolRegistry.read_design_protocol_profile
+async def test_terse_dsl_nested2_route_does_not_fall_back_without_template(monkeypatch):
+    def unexpected_generate(*_args, **_kwargs):
+        pytest.fail("Terse template mismatch must not call the original model flow")
 
-    def generate_nested2(_client, prompt, protocol_profile):
-        prompts.append(prompt)
-        assert protocol_profile["id"] == "terse-dsl-nested-2"
-        assert protocol_profile["format"] == "terse-dsl-nested-2"
-        return source
-
-    def save_artifact(_store, artifact):
-        saved_genui.append(artifact.genui)
-        return ArtifactSaveResult(
-            artifactUrl="https://artifact.test/nested2",
-            artifactDigest="sha256:nested2",
-        )
-
-    def read_nested2_protocol(_registry, profile_id, profiles_root=None):
-        if profile_id != "terse-dsl-nested-2":
-            return original_protocol_reader(profile_id, profiles_root)
-        selected_conversion_profiles.append(profile_id)
-        return {
-            "version": "v0.9",
-            "catalogId": "ohos.a2ui.extended.catalog.form",
-            "sizes": {
-                "2x2": {"width": 138, "height": 138},
-                "2x4": {"width": 298, "height": 138},
-            },
-        }
-
-    monkeypatch.setattr(A2UIModelClient, "generate", generate_nested2)
-    monkeypatch.setattr(
-        PromptBuilder,
-        "build_design_compact",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("Nested-2 must not use the Design Compact prompt builder")
-        ),
-    )
-    monkeypatch.setattr(ArtifactValidator, "validate", lambda *_args: [])
-    monkeypatch.setattr(ArtifactStore, "save", save_artifact)
-    monkeypatch.setattr(
-        A2UIProtocolRegistry,
-        "read_design_protocol_profile",
-        classmethod(read_nested2_protocol),
-    )
+    monkeypatch.setattr(A2UIModelClient, "generate", unexpected_generate)
 
     response = await WidgetGenerationService().generate_widget_card_terse_dsl_nested2(
         _model_failure_request()
     )
 
-    assert response.status == GenerationStatus.SUCCESS
-    assert response.artifactUrl == "https://artifact.test/nested2"
-    assert "TerseDSL-Nested-2" in prompts[0][0]["content"]
-    assert '"createSurface"' in saved_genui[0]
-    assert selected_conversion_profiles == ["terse-dsl-nested-2"]
-    create_surface = json_module.loads(saved_genui[0].splitlines()[0])["createSurface"]
-    assert "width" not in create_surface
-    assert "height" not in create_surface
+    assert response.status == GenerationStatus.FAILED
+    assert response.errorCode == ErrorCode.A2UI_GENERATION_FAILED.value
+    assert response.artifactUrl == ""
 
 
 def test_terse_dsl_nested2_prompt_builder_uses_terse_system_prompt():
@@ -255,7 +202,7 @@ def test_terse_dsl_nested2_prompt_builder_uses_terse_system_prompt():
 
 
 @pytest.mark.asyncio
-async def test_terse_dsl_nested2_rejects_dynamic_requests():
+async def test_terse_dsl_nested2_fails_when_template_model_is_unavailable():
     dynamic_request = GenerateWidgetCardRequest(
         uid="test-user",
         prdVer=APP_VERSION,
@@ -277,8 +224,8 @@ async def test_terse_dsl_nested2_rejects_dynamic_requests():
         dynamic_request
     )
 
-    assert dynamic_response.status == GenerationStatus.UNSUPPORTED
-    assert dynamic_response.errorCode == "PROTOCOL_CAPABILITY_UNSUPPORTED"
+    assert dynamic_response.status == GenerationStatus.FAILED
+    assert dynamic_response.errorCode == ErrorCode.A2UI_GENERATION_FAILED.value
 
 
 def test_websocket_handler_runs_sync_service_in_threadpool():
@@ -3545,11 +3492,6 @@ def _model_failure_request() -> GenerateWidgetCardRequest:
     [
         ("generate_widget_card_a2ui_form", "a2ui_form_model_backend", "openai"),
         ("generate_widget_card_compact_dsl", "design_compact_model_backend", "mep"),
-        (
-            "generate_widget_card_terse_dsl_nested2",
-            "design_compact_model_backend",
-            "mep",
-        ),
     ],
 )
 @pytest.mark.asyncio
@@ -3579,8 +3521,6 @@ async def test_generation_routes_accept_each_configured_model_backend(
     assert captured["model_backend"] == backend
     if generation_method == "generate_widget_card_compact_dsl":
         assert captured["design_profile_id"] == "design-compact-dsl"
-    if generation_method == "generate_widget_card_terse_dsl_nested2":
-        assert captured["design_profile_id"] == "terse-dsl-nested-2"
 
 
 @pytest.mark.parametrize(
@@ -3796,11 +3736,6 @@ _SOURCE_FORMAT_CASES = [
             encoding="utf-8"
         ),
         "design-compact-dsl",
-    ),
-    (
-        "generate_widget_card_terse_dsl_nested2",
-        'Column("card", Text("静态天气", "title"), Text("晴 26℃", "success"));',
-        "terse-dsl-nested-2",
     ),
 ]
 
@@ -4077,7 +4012,6 @@ async def test_unknown_validator_exception_does_not_trigger_model_repair(monkeyp
     ("generation_method", "processor_kind"),
     [
         ("generate_widget_card_compact_dsl", DslProcessorKind.DESIGN_COMPACT),
-        ("generate_widget_card_terse_dsl_nested2", DslProcessorKind.TERSE_NESTED2),
     ],
 )
 @pytest.mark.asyncio
@@ -4132,7 +4066,6 @@ async def test_source_format_warning_does_not_trigger_repair(
     "generation_method",
     [
         "generate_widget_card_compact_dsl",
-        "generate_widget_card_terse_dsl_nested2",
     ],
 )
 @pytest.mark.asyncio
@@ -4169,7 +4102,6 @@ async def test_conversion_failure_does_not_repair_when_switch_is_disabled(
     "generation_method",
     [
         "generate_widget_card_compact_dsl",
-        "generate_widget_card_terse_dsl_nested2",
     ],
 )
 @pytest.mark.asyncio

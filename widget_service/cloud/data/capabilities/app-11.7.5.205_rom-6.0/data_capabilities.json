@@ -556,7 +556,19 @@
       }
     },
     "type": "data",
-    "dataModelSkeleton": {}
+    "dataModelSkeleton": {},
+    "fieldDependencies": [
+      {
+        "triggerFields": [
+          "batterySOCText",
+          "batteryCapacityLevelDesc",
+          "chargingStatusDesc"
+        ],
+        "autoIncludeFields": [
+          "batterySOC"
+        ]
+      }
+    ]
   },
   {
     "id": "GetHealthAndSportSummary",

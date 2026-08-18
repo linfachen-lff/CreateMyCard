@@ -37,6 +37,13 @@ class Dependencies(BaseModel):
     requiredPackages: list[RequiredPackage] = Field(default_factory=list)
 
 
+class FieldDependency(BaseModel):
+    """请求命中触发字段时需要自动补充的同能力输出字段。"""
+
+    triggerFields: list[str]
+    autoIncludeFields: list[str]
+
+
 class DataCapability(BaseModel):
     id: str
     type: Literal["data"] = "data"
@@ -49,6 +56,7 @@ class DataCapability(BaseModel):
     dataModelSkeleton: dict[str, Any] = Field(default_factory=dict)
     # 未声明依赖等价于不需要额外安装包，避免无依赖能力因缺字段而加载失败。
     dependencies: Dependencies = Field(default_factory=Dependencies)
+    fieldDependencies: list[FieldDependency] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_output_leaf_metadata(self) -> "DataCapability":
