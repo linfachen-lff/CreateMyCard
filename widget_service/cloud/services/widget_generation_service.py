@@ -30,6 +30,7 @@ from custom.a2ui_model_client import (
 from custom.model_runtime import ModelExecutionRuntime
 from models.artifact import ArtifactMeta, GenerationPlan, WidgetArtifact
 from models.generation import DEFAULT_WIDGET_SIZE, EventAction, ModelRequestContext, WidgetSize
+from search_integration.adapter import SearchIntegrationAdapter
 from services.artifact_store import ArtifactStore
 from services.capability_registry import CapabilityRegistry
 from services.card_spec_builder import CardSpecBuilder
@@ -61,6 +62,9 @@ from services.task_spec_builder import TaskSpecBuilder
 from services.validator import ArtifactValidator
 
 _MODULE = "[Generation Service]"
+
+#: search 模板检索适配器（全局单例；检索失败自动降级为 miss，不阻断生成）。
+_search_adapter = SearchIntegrationAdapter()
 
 
 class WidgetGenerationService:
@@ -540,6 +544,30 @@ class WidgetGenerationService:
             "task_data_model_schema_keys="
             f"{json_for_log(list(task_spec.dataModelSchema))}"
         )
+        # search 模板检索缓存：仅 compact 新建模式开启。命中结构模板则短路模型调用，
+        # 关键词命中则注入 few-shot；其余情况按原流程生成，任何检索失败都自动降级。
+        search_decision = await _search_adapter.lookup(
+            request,
+            enabled=bool(
+                settings.enable_search_cache
+                and policy.processor_kind == DslProcessorKind.DESIGN_COMPACT
+                and generation_mode != "edit"
+            ),
+            data_model_schema=task_spec.dataModelSchema,
+            size=card_spec.suggestSize,
+        )
+        use_cached_dsl = search_decision.outcome == "structure_match" and bool(
+            search_decision.rendered_jsonl
+        )
+        few_shot = search_decision.few_shot
+        if search_decision.outcome != "disabled":
+            logger.info(
+                f"{_MODULE} search_cache_decision outcome={search_decision.outcome} "
+                f"template_id={search_decision.template_id or ''} "
+                f"miss_reason={search_decision.miss_reason or ''} "
+                f"use_cached_dsl={use_cached_dsl} "
+                f"few_shot={bool(few_shot)}"
+            )
         # Prompt 约束模型生成源 DSL；Processor 和 Validator 依次产出统一质量问题，再由策略决定门禁。
         if policy.stores_design_token:
             design_system_prompt = A2UIProtocolRegistry.read_design_prompt(
@@ -550,6 +578,7 @@ class WidgetGenerationService:
                 design_system_prompt,
                 policy.source_format,
                 previous_design_token=previous_design_token,
+                reference_jsonl=few_shot,
             )
         else:
             prompt = PromptBuilder().build(
@@ -611,6 +640,12 @@ class WidgetGenerationService:
         async def generate_source_dsl() -> str:
             if before_model_call is not None:
                 await before_model_call(card_spec.suggestSize)
+            if use_cached_dsl and search_decision.rendered_jsonl:
+                logger.info(
+                    f"{_MODULE} search_structure_match_served "
+                    f"template_id={search_decision.template_id or ''}"
+                )
+                return search_decision.rendered_jsonl
             logger.info(
                 f"{_MODULE} model_source_generation_started operation={policy.operation}"
             )
@@ -654,6 +689,27 @@ class WidgetGenerationService:
                     repair_prompt,
                     model_protocol_profile,
                 )
+            )
+            return require_generated_dsl(result)
+
+        async def fallback_generation(
+            invalid_source_dsl: str,
+            quality_errors: list[str],
+        ) -> str:
+            """缓存 DSL 转换/校验失败时，无 few-shot 回退为正常模型生成。
+
+            该闭包只作为 RetryController 的 repair 回调使用一次（max_repair=1），
+            不走 repair 提示词，避免用模型修复缓存模板。
+            """
+            nonlocal model_call_phase
+            model_call_phase = "fallback"
+            logger.warning(
+                f"{_MODULE} search_structure_match_fallback "
+                f"error_count={len(quality_errors)} "
+                f"errors={json_for_log(quality_errors)}"
+            )
+            result = await self._resolve_model_result(
+                model_client.generate(prompt, model_protocol_profile)
             )
             return require_generated_dsl(result)
 
@@ -740,9 +796,11 @@ class WidgetGenerationService:
             retry_result = await retry_controller.run(
                 generate_source_dsl,
                 evaluate_source_dsl,
-                retry_on_quality_failure=retry_on_validation_failure,
-                max_repair_attempts=settings.validation_failure_max_repair_attempts,
-                repair=repair_source_dsl,
+                retry_on_quality_failure=(retry_on_validation_failure or use_cached_dsl),
+                max_repair_attempts=(
+                    1 if use_cached_dsl else settings.validation_failure_max_repair_attempts
+                ),
+                repair=(fallback_generation if use_cached_dsl else repair_source_dsl),
             )
         except A2UIModelGenerationError as exc:
             quality_repair_count = quality_repair_attempt_count

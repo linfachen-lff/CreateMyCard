@@ -48,13 +48,14 @@ generate_widget_card_compact_dsl_ws
 → DeviceCapabilityResolver.resolve_generation_data_bindings
 → CardSpecBuilder.build
 → TaskSpecBuilder.build
-→ PromptBuilder.build_design_compact
-→ A2UIModelClient.generate
+→ SearchIntegrationAdapter.lookup     # 仅开关开启 + 新建模式；命中短路/未命中 few-shot
+→ PromptBuilder.build_design_compact  # keyword_match 时携带 referenceExamples
+→ A2UIModelClient.generate            # structure_match 短路时跳过
 → DesignCompactProcessor.process
 → validate_compact_dsl_context
 → convert_compact_dsl_to_a2ui
 → ArtifactValidator.validate
-→ RetryController.run
+→ RetryController.run                 # structure_match 失败时以 fallback_generation 回退一次
 → WidgetGenerationService._build_artifact
 → ArtifactStore.save
 → ResponsePlanner.plan
@@ -70,6 +71,7 @@ generate_widget_card_compact_dsl_ws
 - Prompt：`../widget_service/cloud/services/prompt_builder.py`
 - Artifact 校验：`../widget_service/cloud/services/validator.py`
 - Artifact 保存：`../widget_service/cloud/services/artifact_store.py`
+- Search 适配层：`../widget_service/cloud/search_integration/`（vendored：`../widget_service/vendor_search/`）
 
 ## 3. WebSocket 请求和归一化
 

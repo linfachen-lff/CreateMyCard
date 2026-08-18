@@ -49,6 +49,10 @@ pnpm-debug.log*
 .nuxt/
 coverage/
 
+# vendored search 运行时数据库（由 build_db.py / manage.py 构建，不提交）
+widget_service/vendor_search/search/data/
+widget_service/vendor_search/**/*.sqlite3
+
 # Generated archives
 *.zip
 *.tar

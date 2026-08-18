@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     openai_master_client: Literal["deepseek_platform", "llmclient"] = "deepseek_platform"
     openai_fallback_client: Literal["deepseek_platform", "llmclient"] = "llmclient"
     enable_openai_fallback: bool = True
+    # search 模板检索缓存（vendored search 模块）；默认关闭。命中直出 / 未命中 few-shot。
+    enable_search_cache: bool = False
+    # 检索运行时数据库路径；为空时使用 vendored 默认路径（SEARCH_DB_PATH 优先）。
+    search_db_path: str = ""
     # DeepSeek Platform 使用 STS 中的 SK 签名；普通配置中只保存 AK 和 STS key 名。
     deepseek_platform_access_key: str = ""
     deepseek_platform_secret_key_sts_config_key: str = "genui.deepseek.platform.secret.key"
