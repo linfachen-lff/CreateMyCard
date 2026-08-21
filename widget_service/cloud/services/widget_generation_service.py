@@ -47,7 +47,6 @@ from services.generation_preflight import GenerationPreflight
 from services.prompt_builder import PromptBuilder
 from services.protocol_registry import (
     A2UI_FORM_PROTOCOL_PROFILE_ID,
-    TERSE_DSL_NESTED2_PROFILE_ID,
     A2UIProtocolRegistry,
     ProtocolProfileSelection,
 )
@@ -58,9 +57,11 @@ from services.source_artifact_repository import (
     SourceArtifactLoadResult,
     SourceArtifactRepository,
 )
+from services.template_generation import request_template_source_dsl
 from services.validator import ArtifactValidator
 
 _MODULE = "[Generation Service]"
+TemplateSourceGenerator = Callable[..., Awaitable[str]]
 
 
 class WidgetGenerationService:
@@ -252,6 +253,8 @@ class WidgetGenerationService:
         *,
         policy: GenerationRoutePolicy,
         before_model_call: Callable[[WidgetSize], Awaitable[None]] | None = None,
+        template_source_generator: TemplateSourceGenerator | None = None,
+        need_fallback: bool = True,
     ) -> GenerateWidgetCardResponse:
         """生成卡片。
 
@@ -585,6 +588,30 @@ class WidgetGenerationService:
         async def generate_source_dsl() -> str:
             if before_model_call is not None:
                 await before_model_call(card_spec.suggestSize)
+            if template_source_generator is not None:
+                try:
+                    logger.info(
+                        f"{_MODULE} template_source_generation_started "
+                        f"operation={policy.operation}"
+                    )
+                    result = await template_source_generator(
+                        task_spec,
+                        processing_context.card_spec,
+                        tuple(effective_bindings),
+                    )
+                    return require_generated_dsl(result)
+                except Exception as exc:
+                    fallback = "original_protocol_flow" if need_fallback else "none"
+                    logger.info(
+                        f"{_MODULE} template_source_generation_failed "
+                        f"operation={policy.operation} fallback={fallback} "
+                        f"reason={type(exc).__name__} "
+                        f"detail={json_for_log(str(exc))}"
+                    )
+                    if not need_fallback:
+                        raise A2UIModelGenerationError(
+                            "Template source generation failed without fallback"
+                        ) from exc
             logger.info(
                 f"{_MODULE} model_source_generation_started operation={policy.operation}"
             )
@@ -1072,12 +1099,12 @@ class WidgetGenerationService:
             validation_failure_blocking=True,
             stores_design_token=True,
         )
-        if before_model_call is None:
-            return await self._generate_widget_card_with_policy(request, policy)
         return await self._generate_widget_card_with_policy(
             request,
             policy,
             before_model_call=before_model_call,
+            try_template=True,
+            need_fallback=True,
         )
 
     async def generate_widget_card_terse_dsl_nested2(
@@ -1086,7 +1113,7 @@ class WidgetGenerationService:
         *,
         before_model_call: Callable[[WidgetSize], Awaitable[None]] | None = None,
     ) -> GenerateWidgetCardResponse:
-        """使用本地 TerseDSL-Nested-2 Prompt 和转换器生成标准 A2UI。"""
+        """复用 Design Compact 原始生成链处理 Terse 模板入口。"""
         try:
             selection = self._compact_protocol_selection(request)
         except ValueError as exc:
@@ -1104,21 +1131,30 @@ class WidgetGenerationService:
             operation="generateWidgetCardTerseDslNested2",
             protocol_profile_id=selection.protocol_profile_id,
             backend=get_settings().design_compact_model_backend,
-            processor_kind=DslProcessorKind.TERSE_NESTED2,
-            source_format=TERSE_DSL_NESTED2_PROFILE_ID,
-            model_profile_id=TERSE_DSL_NESTED2_PROFILE_ID,
-            model_format=TERSE_DSL_NESTED2_PROFILE_ID,
-            design_profile_id=TERSE_DSL_NESTED2_PROFILE_ID,
-            supports_dynamic_capabilities=False,
+            processor_kind=DslProcessorKind.DESIGN_COMPACT,
+            source_format=selection.design_profile_id,
+            model_profile_id=selection.design_profile_id,
+            model_format="compact-dsl",
+            design_profile_id=selection.design_profile_id,
+            supports_dynamic_capabilities=True,
             validation_failure_blocking=True,
             stores_design_token=True,
         )
-        if before_model_call is None:
-            return await self._generate_widget_card_with_policy(request, policy)
+        if "sourceArtifactUrl" in request.model_fields_set:
+            return GenerateWidgetCardResponse(
+                status=GenerationStatus.FAILED,
+                suggestSize=request.size or DEFAULT_WIDGET_SIZE,
+                message="模板路线暂不支持二次更新。",
+                errorCode=ErrorCode.A2UI_GENERATION_FAILED.value,
+            )
+        # 问题定位时可显式调用
+        # services.template_generation.route_legacy_python_terse_generation(...)。
         return await self._generate_widget_card_with_policy(
             request,
             policy,
             before_model_call=before_model_call,
+            try_template=True,
+            need_fallback=False,
         )
 
     async def _generate_widget_card_with_policy(
@@ -1127,8 +1163,10 @@ class WidgetGenerationService:
         policy: GenerationRoutePolicy,
         *,
         before_model_call: Callable[[WidgetSize], Awaitable[None]] | None = None,
+        try_template: bool = False,
+        need_fallback: bool = True,
     ) -> GenerateWidgetCardResponse:
-        """复制请求并锁定路由对应的协议 profile。"""
+        """复制请求并锁定协议 Profile，按需注入模板 source generator。"""
         unsupported_response = self._policy_unsupported_response(request, policy)
         if unsupported_response is not None:
             return unsupported_response
@@ -1137,10 +1175,39 @@ class WidgetGenerationService:
         )
         profiled_request._model_request_context = request._model_request_context
         profiled_request._raw_request_body = request._raw_request_body
+        is_edit = "sourceArtifactUrl" in request.model_fields_set
+        if not try_template or is_edit:
+            return await self.generate_widget_card(
+                profiled_request,
+                policy=policy,
+                before_model_call=before_model_call,
+            )
+
+        async def generate_template_source(
+            task_spec,
+            card_spec: dict,
+            effective_bindings: tuple,
+        ) -> str:
+            return await request_template_source_dsl(
+                task_spec,
+                card_spec,
+                effective_bindings,
+                processor_kind=policy.processor_kind,
+                protocol_profile=A2UIProtocolRegistry(
+                    policy.protocol_profile_id
+                ).get_profile(),
+                model_runtime=self.model_runtime,
+                model_request_context=self._resolve_model_request_context(
+                    profiled_request
+                ),
+            )
+
         return await self.generate_widget_card(
             profiled_request,
             policy=policy,
             before_model_call=before_model_call,
+            template_source_generator=generate_template_source,
+            need_fallback=need_fallback,
         )
 
     @staticmethod
