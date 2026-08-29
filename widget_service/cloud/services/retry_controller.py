@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import inspect
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 
 from models.service import RetryResult
+from typing import TypeVar, Awaitable, Union
+
+T = TypeVar('T')
 
 
-async def _resolve[T](value: T | Awaitable[T]) -> T:
+async def _resolve(value: Union[T, Awaitable[T]]) -> T:
     """兼容异步生产实现和测试提供的立即返回值。"""
     if inspect.isawaitable(value):
         return await value
